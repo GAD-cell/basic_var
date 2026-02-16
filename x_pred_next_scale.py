@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -7,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from tqdm import tqdm
 from transformers import GPT2Config, GPT2Model
 from eval.fid import fid_from_features, precision_recall_knn
 from eval.features import get_dinov2_model, extract_dinov2_features
@@ -34,18 +36,18 @@ class XPredConfig:
 
 @dataclass
 class TrainConfig:
-    train_data_path: str = "/path/to/imagenet"
+    train_data_path: str = "data/"
     epochs: int = 10
     batch_size: int = 32
-    workers: int = 4
+    workers: int = 0
     lr: float = 3e-4
-    weight_decay: float = 0.05
+    weight_decay: float = 1e-4
     grad_accum: int = 1
-    eval_every_n_epochs: int = 1
+    eval_every_n_epochs: int = 10
     n_eval_samples: int = 5000
-    real_features_path: str = "/path/to/imagenet_dinov2_features.pt"
+    real_features_path: str = "data/"
     real_subset: int = 50000
-    knn_k: int = 5
+    knn_k: int = 3
     use_amp: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -239,7 +241,7 @@ class XPredNextScale(nn.Module):
         # scales 2..K: upsample previous scale to current size, then patchify
         for k in range(1, self.num_scales):
             prev = imgs_k[k - 1]
-            up = F.interpolate(prev, size=(self.scales[k], self.scales[k]), mode="bilinear", align_corners=False)
+            up = F.interpolate(prev, size=(self.scales[k], self.scales[k]), mode="bicubic", align_corners=False)
             patches = patchify(up, self.p)
             blocks.append(self.patch_embed(patches))
 
@@ -348,7 +350,7 @@ class XPredNextScale(nn.Module):
         # subsequent scales
         for k in range(1, self.num_scales):
             sk = self.scales[k]
-            up = F.interpolate(img_k, size=(sk, sk), mode="bilinear", align_corners=False)
+            up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
             patches = patchify(up, self.p)
             inp = self.patch_embed(patches)
             inp_cond = add_cond(inp, labels)
@@ -411,11 +413,13 @@ def evaluate_model(
     real_subset: int,
     knn_k: int,
 ):
+    print("Evaluating model...")
     device = next(model.parameters()).device
     dinov2 = get_dinov2_model(device)
 
     fake_feats = []
     remaining = n_samples
+    print(f"Generating {n_samples} samples for evaluation...")
     while remaining > 0:
         cur = min(batch_size, remaining)
         imgs = model.generate(B=cur).clamp(0, 1)
@@ -424,22 +428,28 @@ def evaluate_model(
         remaining -= cur
     fake_feats = torch.cat(fake_feats, dim=0)
 
+    print(f"Loading real features from {real_features_path}...")
     real_feats = torch.load(real_features_path, map_location="cpu")
     if real_subset > 0 and real_feats.shape[0] > real_subset:
         idx = torch.randperm(real_feats.shape[0])[:real_subset]
         real_feats = real_feats[idx]
 
+    print("Computing FID...")
     fid = fid_from_features(real_feats, fake_feats)
+    print("Computing precision and recall...")
     precision, recall = precision_recall_knn(real_feats, fake_feats, k=knn_k)
     return {"fid": fid, "precision": precision, "recall": recall}
 
 
-def train(model: XPredNextScale, train_cfg: TrainConfig):
+def _train_loop(
+    model: XPredNextScale,
+    train_cfg: TrainConfig,
+    ld: DataLoader,
+    real_features_path: str,
+):
+    print("Starting training...")
     device = torch.device(train_cfg.device)
     model.to(device)
-
-    sK = model.scales[-1]
-    ld = build_dataloader(train_cfg.train_data_path, sK, train_cfg.batch_size, train_cfg.workers)
 
     optim = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=train_cfg.epochs * len(ld))
@@ -448,17 +458,17 @@ def train(model: XPredNextScale, train_cfg: TrainConfig):
     for ep in range(train_cfg.epochs):
         model.train()
         optim.zero_grad(set_to_none=True)
-        epoch_loss = 0.0
-        n_batches = 0
-        for i, batch in enumerate(ld):
+        pbar = tqdm(ld, desc=f"Epoch {ep+1}", leave=False)
+        for i, batch in enumerate(pbar):
             if scaler is not None:
                 with torch.cuda.amp.autocast():
                     loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             else:
                 loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             # train_one_batch returns loss scaled by grad_accum
-            epoch_loss += float(loss) * train_cfg.grad_accum
-            n_batches += 1
+
+            pbar.set_postfix(loss=f"{(loss*train_cfg.grad_accum).item():.6f}")
+
 
             if (i + 1) % train_cfg.grad_accum == 0:
                 if scaler is not None:
@@ -469,21 +479,97 @@ def train(model: XPredNextScale, train_cfg: TrainConfig):
                 optim.zero_grad(set_to_none=True)
                 scheduler.step()
 
-        if n_batches > 0:
-            avg_loss = epoch_loss / n_batches
-            print(f"[train ep {ep+1}] loss={avg_loss:.6f}")
-
         if (ep + 1) % train_cfg.eval_every_n_epochs == 0:
             model.eval()
             metrics = evaluate_model(
                 model=model,
                 n_samples=train_cfg.n_eval_samples,
                 batch_size=min(train_cfg.batch_size, train_cfg.n_eval_samples),
-                real_features_path=train_cfg.real_features_path,
+                real_features_path=real_features_path,
                 real_subset=train_cfg.real_subset,
                 knn_k=train_cfg.knn_k,
             )
             print(f"[eval ep {ep+1}] {metrics}")
+
+
+def train(model: XPredNextScale, train_cfg: TrainConfig):
+    sK = model.scales[-1]
+    ld = build_dataloader(train_cfg.train_data_path, sK, train_cfg.batch_size, train_cfg.workers)
+    _train_loop(model, train_cfg, ld, train_cfg.real_features_path)
+
+
+def _preprocess_cifar10_features(
+    root: Path,
+    device: torch.device,
+    split: str,
+    batch_size: int,
+    out_path: Path,
+):
+    is_train = split == "train"
+    ds = datasets.CIFAR10(root=str(root), train=is_train, download=True, transform=transforms.ToTensor())
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    model = get_dinov2_model(device)
+    feats = []
+    pbar = tqdm(dl, desc=f"dinov2 {split}", leave=False)
+    for imgs, _ in pbar:
+        imgs = imgs.to(device, non_blocking=True)
+        cur = extract_dinov2_features(model, imgs)
+        feats.append(cur.cpu())
+    feats = torch.cat(feats, dim=0)
+    torch.save(feats, out_path)
+
+
+def train_cifar10(
+    model: XPredNextScale,
+    train_cfg: TrainConfig,
+    data_root: str = "data",
+    feature_split: str = "train",
+    feature_batch_size: int = 128,
+    force_recompute_features: bool = False,
+):
+    device = torch.device(train_cfg.device)
+    model.to(device)
+
+    root = Path(data_root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    sK = model.scales[-1]
+    tfm = transforms.Compose(
+        [
+            transforms.Resize(sK, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(sK),
+            transforms.ToTensor(),
+        ]
+    )
+
+    print(f"Loading CIFAR-10 training data with image size {sK}x{sK}...")
+    train_ds = datasets.CIFAR10(root=str(root), train=True, download=True, transform=tfm)
+    ld = DataLoader(
+        train_ds,
+        batch_size=train_cfg.batch_size,
+        shuffle=True,
+        num_workers=train_cfg.workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    feature_split = feature_split.lower()
+    if feature_split not in {"train", "test"}:
+        raise ValueError("feature_split must be 'train' or 'test'")
+    features_path = root / f"cifar10_{feature_split}_dinov2_features.pt"
+    if force_recompute_features or not features_path.exists():
+        print(f"[cifar10] computing DINOv2 features ({feature_split}) -> {features_path}")
+        _preprocess_cifar10_features(
+            root=root,
+            device=device,
+            split=feature_split,
+            batch_size=feature_batch_size,
+            out_path=features_path,
+        )
+    else:
+        print(f"[cifar10] using existing feature at {features_path}")
+
+    _train_loop(model, train_cfg, ld, str(features_path))
 
 def test():
     cfg = XPredConfig(scales=(16, 32, 64), patch_size=16, d_model=256, n_layer=4, n_head=4, decoder_type="var")
@@ -494,4 +580,23 @@ def test():
     print("loss:", float(loss))
 
 if __name__ == "__main__":
-    test()
+    train_cfg = TrainConfig(epochs=100, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt")
+    cfg = XPredConfig(
+        scales=(4, 8, 16, 32),
+        patch_size=4,
+        d_model=256,
+        n_layer=2,
+        n_head=2,
+        decoder_type="var",
+        mlp_ratio=2.0,
+        drop_path_rate=0.1,
+        attn_l2_norm=True,
+        shared_aln=True,
+        cond_drop_prob=0.5,
+        use_noise_seed=True,
+        noise_dim=16,
+        noise_scale=1.0,
+    )
+
+    model = XPredNextScale(cfg)
+    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False)
