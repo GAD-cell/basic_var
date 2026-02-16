@@ -122,15 +122,7 @@ class VAR(nn.Module):
     def autoregressive_infer_cfg(
         self, B: int, label_B: Optional[Union[int, torch.LongTensor]]=None,
         g_seed: Optional[int] = None, cfg=1.5,
-    ) -> torch.Tensor:   # returns reconstructed image (B, 3, H, W) in [0, 1]
-        """
-        only used for inference, on autoregressive mode
-        :param B: batch size
-        :param label_B: imagenet label; if None, randomly sampled
-        :param g_seed: random seed
-        :param cfg: classifier-free guidance ratio
-        :return: if returns_vemb: list of embedding h_BChw := vae_embed(idx_Bl), else: list of idx_Bl
-        """
+    ) -> torch.Tensor:
         if g_seed is None: rng = None
         else: self.rng.manual_seed(g_seed); rng = self.rng
         
@@ -149,48 +141,60 @@ class VAR(nn.Module):
         next_token_map = sos + lvl_pos[:, :self.first_l]
         
         cur_L = 0
-        f_hat = sos.new_zeros(B, self.pixel_dim, self.patch_nums[-1], self.patch_nums[-1])
-        #print(f_hat.shape)
+        ps = 16  # patch_size
+        last_pn = self.patch_nums[-1]
+        
+        f_hat = sos.new_zeros(B, self.num_channels, last_pn * ps, last_pn * ps)  # (B, 3, 64, 64)
 
         for b in self.blocks: b.attn.kv_caching(True)
-        for si, pn in enumerate(self.patch_nums):   # si: i-th segment
+        
+        for si, pn in enumerate(self.patch_nums):
             ratio = si / self.num_stages_minus_1
-            # last_L = cur_L
             cur_L += pn*pn
-            # assert self.attn_bias_for_masking[:, :, last_L:cur_L, :cur_L].sum() == 0, f'AR with {(self.attn_bias_for_masking[:, :, last_L:cur_L, :cur_L] != 0).sum()} / {self.attn_bias_for_masking[:, :, last_L:cur_L, :cur_L].numel()} mask item'
+            
             cond_BD_or_gss = self.shared_ada_lin(cond_BD)
             x = next_token_map
-            AdaLNSelfAttn.forward
+            
             for b in self.blocks:
                 x = b(x=x, cond_BD=cond_BD_or_gss, attn_bias=None)
+            
             projs = self.out_proj(x)
             
             t = cfg * ratio
             projs = (1 + t) * projs[:B] - t * projs[B:]
             
-            h_BChw = projs.transpose_(1, 2).reshape(B, self.pixel_dim, pn, pn)
-            if pn != self.patch_nums[-1]:
-                h_BChw = F.interpolate(h_BChw, size=(self.patch_nums[-1], self.patch_nums[-1]), mode='bicubic')
-            f_hat.add_(h_BChw) 
-            if si != self.num_stages_minus_1:   # prepare for next stage
-                next_token_map = F.interpolate(h_BChw, size=(self.patch_nums[si+1], self.patch_nums[si+1]), mode='bicubic')
-                next_token_map = next_token_map.view(B, self.pixel_dim, -1).transpose(1, 2)
+            h_BChw = projs.transpose(1, 2).reshape(B, self.pixel_dim, pn, pn)  # (B, 768, pn, pn)
+            
+            h_pixels = h_BChw.permute(0, 2, 3, 1).reshape(B, pn, pn, self.num_channels, ps, ps)
+            h_pixels = h_pixels.permute(0, 3, 1, 4, 2, 5).reshape(B, self.num_channels, pn * ps, pn * ps)
+            
+            if pn != last_pn:
+                h_pixels = F.interpolate(h_pixels, size=(last_pn * ps, last_pn * ps), 
+                                        mode='bicubic', align_corners=False)
+            
+            f_hat.add_(h_pixels)
+            
+            if si != self.num_stages_minus_1:
+
+                next_size = self.patch_nums[si+1] * ps
+                next_pixels = F.interpolate(h_pixels, size=(next_size, next_size), 
+                                        mode='bicubic', align_corners=False)
+                
+                next_pn = self.patch_nums[si+1]
+                next_patches = next_pixels.reshape(B, self.num_channels, next_pn, ps, next_pn, ps)
+                next_patches = next_patches.permute(0, 2, 4, 1, 3, 5).reshape(B, next_pn, next_pn, -1)
+                next_token_map = next_patches.reshape(B, next_pn * next_pn, -1)
+                
                 next_token_map = self.in_proj(next_token_map)
-                next_token_map += lvl_pos[:, cur_L:cur_L + self.patch_nums[si+1] ** 2]
-                next_token_map = next_token_map.repeat(2, 1, 1)   # double the batch sizes due to CFG
+                next_token_map += lvl_pos[:, cur_L:cur_L + next_pn ** 2]
+                next_token_map = next_token_map.repeat(2, 1, 1)
 
         for b in self.blocks: b.attn.kv_caching(False)
         
-        f_hat = f_hat.add_(1).mul_(0.5)  # Normalisation
-        f_hat = f_hat.view(B, self.pixel_dim, -1).transpose(1, 2)  # (B, L, pixel_dim)
-        f_hat = self.unflatten(f_hat)  # (B, L, C, P, P)
-        B, L, C, P, _ = f_hat.shape
-
-        grid_size = int(L**0.5) 
-        f_hat = f_hat.view(B, grid_size, grid_size, C, P, P)
-        f_hat = f_hat.permute(0, 3, 1, 4, 2, 5).contiguous()
-        img = f_hat.view(B, C, grid_size * P, grid_size * P)
-        return  img  
+        img = f_hat.add_(1).mul_(0.5)  # [-1, 1] -> [0, 1]
+        img = torch.clamp(img, 0, 1)
+        
+        return img
     
     def forward(self, label_B: torch.LongTensor, x_BLCv_wo_first_l: torch.Tensor) -> torch.Tensor:
             bg, ed = self.begin_ends[self.prog_si] if self.prog_si >= 0 else (0, self.L)
