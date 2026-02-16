@@ -128,6 +128,7 @@ class XPredNextScale(nn.Module):
         self.noise_proj = nn.Linear(cfg.noise_dim, cfg.d_model) if cfg.use_noise_seed else None
 
         if cfg.decoder_type == "gpt2":
+            print("Using GPT-2 decoder.")
             gpt_cfg = GPT2Config(
                 n_embd=cfg.d_model,
                 n_layer=cfg.n_layer,
@@ -142,6 +143,7 @@ class XPredNextScale(nn.Module):
             for block in self.decoder.h:
                 block.attn.is_causal = False
         elif cfg.decoder_type == "var":
+            print("Using VAR decoder.")
             from models.xpred_var_decoder import XPredVARDecoder
             self.decoder = XPredVARDecoder(
                 d_model=cfg.d_model,
@@ -492,4 +494,4 @@ def test():
     print("loss:", float(loss))
 
 if __name__ == "__main__":
-    pass
+    test()
