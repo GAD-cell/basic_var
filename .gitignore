@@ -1,0 +1,38 @@
+# Environments
+.venv/
+venv/
+env/
+.env/
+
+# Data (keep folder, ignore contents)
+data/*
+!data/.gitkeep
+
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Type checker / linter caches
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# Packaging/build
+build/
+dist/
+*.egg-info/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

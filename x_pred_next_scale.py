@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from transformers import GPT2Config, GPT2Model
+from eval.fid import fid_from_features, precision_recall_knn
+from eval.features import get_dinov2_model, extract_dinov2_features
 
 
 @dataclass
@@ -398,59 +400,6 @@ def train_one_batch(model: nn.Module, batch, optimizer, scaler, grad_accum: int)
     return loss.detach()
 
 
-def _sqrtm_psd(mat: torch.Tensor) -> torch.Tensor:
-    eigvals, eigvecs = torch.linalg.eigh(mat)
-    eigvals = torch.clamp(eigvals, min=0)
-    return (eigvecs * eigvals.sqrt().unsqueeze(0)) @ eigvecs.T
-
-
-def fid_from_features(real: torch.Tensor, fake: torch.Tensor) -> float:
-    mu_r, mu_f = real.mean(0), fake.mean(0)
-    cov_r = torch.cov(real.T)
-    cov_f = torch.cov(fake.T)
-    cov_sqrt = _sqrtm_psd(cov_r @ cov_f)
-    fid = (mu_r - mu_f).pow(2).sum() + torch.trace(cov_r + cov_f - 2 * cov_sqrt)
-    return float(fid)
-
-
-def precision_recall_knn(real: torch.Tensor, fake: torch.Tensor, k: int = 5) -> Tuple[float, float]:
-    dist_rr = torch.cdist(real, real)
-    dist_rr.fill_diagonal_(float("inf"))
-    radii_real = dist_rr.kthvalue(k, dim=1).values
-
-    dist_rf = torch.cdist(fake, real)
-    min_dist, nn_idx = dist_rf.min(dim=1)
-    precision = (min_dist <= radii_real[nn_idx]).float().mean().item()
-
-    dist_ff = torch.cdist(fake, fake)
-    dist_ff.fill_diagonal_(float("inf"))
-    radii_fake = dist_ff.kthvalue(k, dim=1).values
-    dist_fr = torch.cdist(real, fake)
-    min_dist_r, nn_idx_r = dist_fr.min(dim=1)
-    recall = (min_dist_r <= radii_fake[nn_idx_r]).float().mean().item()
-    return precision, recall
-
-
-def get_dinov2_model(device: torch.device):
-    model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
-    model.eval().to(device)
-    return model
-
-
-def extract_dinov2_features(model, imgs_bchw: torch.Tensor) -> torch.Tensor:
-    tfm = transforms.Compose(
-        [
-            transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.CenterCrop(224),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ]
-    )
-    imgs = tfm(imgs_bchw)
-    with torch.no_grad():
-        feats = model(imgs).detach()
-    return feats
-
-
 @torch.no_grad()
 def evaluate_model(
     model: XPredNextScale,
@@ -497,12 +446,17 @@ def train(model: XPredNextScale, train_cfg: TrainConfig):
     for ep in range(train_cfg.epochs):
         model.train()
         optim.zero_grad(set_to_none=True)
+        epoch_loss = 0.0
+        n_batches = 0
         for i, batch in enumerate(ld):
             if scaler is not None:
                 with torch.cuda.amp.autocast():
                     loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             else:
                 loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
+            # train_one_batch returns loss scaled by grad_accum
+            epoch_loss += float(loss) * train_cfg.grad_accum
+            n_batches += 1
 
             if (i + 1) % train_cfg.grad_accum == 0:
                 if scaler is not None:
@@ -512,6 +466,10 @@ def train(model: XPredNextScale, train_cfg: TrainConfig):
                     optim.step()
                 optim.zero_grad(set_to_none=True)
                 scheduler.step()
+
+        if n_batches > 0:
+            avg_loss = epoch_loss / n_batches
+            print(f"[train ep {ep+1}] loss={avg_loss:.6f}")
 
         if (ep + 1) % train_cfg.eval_every_n_epochs == 0:
             model.eval()
@@ -525,12 +483,13 @@ def train(model: XPredNextScale, train_cfg: TrainConfig):
             )
             print(f"[eval ep {ep+1}] {metrics}")
 
-
-if __name__ == "__main__":
-    # minimal smoke test (shapes only)
+def test():
     cfg = XPredConfig(scales=(16, 32, 64), patch_size=16, d_model=256, n_layer=4, n_head=4, decoder_type="var")
     model = XPredNextScale(cfg)
     x = torch.randn(2, 3, 64, 64)
     y = torch.randint(0, cfg.num_classes, (2,))
     loss = model(x, y)
     print("loss:", float(loss))
+
+if __name__ == "__main__":
+    pass

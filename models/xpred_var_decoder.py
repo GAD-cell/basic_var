@@ -30,7 +30,8 @@ class XPredVARDecoder(nn.Module):
         self.depth = depth
         self.shared_aln = shared_aln
 
-        norm_layer = lambda dim: nn.LayerNorm(dim, eps=norm_eps)
+        def norm_layer(dim, elementwise_affine=True):
+            return nn.LayerNorm(dim, eps=norm_eps, elementwise_affine=elementwise_affine)
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
 
         self.shared_ada_lin = (
