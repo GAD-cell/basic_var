@@ -521,13 +521,14 @@ def _preprocess_cifar10_features(
     split: str,
     batch_size: int,
     out_path: Path,
+    progress_bar: bool = False,
 ):
     is_train = split == "train"
     ds = datasets.CIFAR10(root=str(root), train=is_train, download=True, transform=transforms.ToTensor())
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
     model = get_dinov2_model(device)
     feats = []
-    pbar = tqdm(dl, desc=f"dinov2 {split}", leave=False)
+    pbar = tqdm(dl, desc=f"dinov2 {split}", leave=False) if progress_bar else dl
     for imgs, _ in pbar:
         imgs = imgs.to(device, non_blocking=True)
         cur = extract_dinov2_features(model, imgs)
@@ -543,6 +544,7 @@ def train_cifar10(
     feature_split: str = "train",
     feature_batch_size: int = 128,
     force_recompute_features: bool = False,
+    progress_bar: bool = False,
 ):
     device = torch.device(train_cfg.device)
     model.to(device)
@@ -582,11 +584,12 @@ def train_cifar10(
             split=feature_split,
             batch_size=feature_batch_size,
             out_path=features_path,
+            progress_bar=progress_bar,
         )
     else:
         print(f"[cifar10] using existing feature at {features_path}")
 
-    _train_loop(model, train_cfg, ld, str(features_path), progress_bar=False)
+    _train_loop(model, train_cfg, ld, str(features_path), progress_bar=progress_bar)
 
 def test():
     cfg = XPredConfig(scales=(16, 32, 64), patch_size=16, d_model=256, n_layer=4, n_head=4, decoder_type="var")
