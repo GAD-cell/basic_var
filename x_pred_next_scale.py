@@ -580,22 +580,22 @@ def test():
     print("loss:", float(loss))
 
 if __name__ == "__main__":
-    train_cfg = TrainConfig(epochs=100, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt")
+    train_cfg = TrainConfig(epochs=1000, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt")
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
         patch_size=4,
         d_model=256,
-        n_layer=2,
-        n_head=2,
+        n_layer=4,
+        n_head=4,
         decoder_type="var",
         mlp_ratio=2.0,
-        drop_path_rate=0.1,
+        drop_path_rate=0.05,
         attn_l2_norm=True,
-        shared_aln=True,
-        cond_drop_prob=0.5,
+        shared_aln=False,
+        cond_drop_prob=0.1,
         use_noise_seed=True,
-        noise_dim=16,
-        noise_scale=1.0,
+        noise_dim=32,
+        noise_scale=0.5,
     )
 
     model = XPredNextScale(cfg)
