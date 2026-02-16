@@ -51,6 +51,18 @@ class TrainConfig:
     use_amp: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
+def pick_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+    
+def _use_amp(device: torch.device) -> bool:
+    if device.type == "cuda":
+        return True
+    return False
 
 def _check_scales(scales: Tuple[int, ...], p: int):
     assert len(scales) >= 2, "Need at least two scales."
@@ -412,7 +424,6 @@ def evaluate_model(
     real_features_path: str,
     real_subset: int,
     knn_k: int,
-    progress_bar: bool = False,
 ):
     print("Evaluating model...")
     device = next(model.parameters()).device
@@ -494,7 +505,6 @@ def _train_loop(
                 real_features_path=real_features_path,
                 real_subset=train_cfg.real_subset,
                 knn_k=train_cfg.knn_k,
-                progress_bar=progress_bar,
             )
             print(f"[eval ep {ep+1}] {metrics}")
 
@@ -587,7 +597,9 @@ def test():
     print("loss:", float(loss))
 
 if __name__ == "__main__":
-    train_cfg = TrainConfig(epochs=1000, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt")
+    device = pick_device()
+    print(f"Using device: {device}")
+    train_cfg = TrainConfig(epochs=1000, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt", real_subset=50000, knn_k=3, use_amp=_use_amp(device), device=device.type)
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
         patch_size=4,

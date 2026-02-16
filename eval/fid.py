@@ -16,6 +16,13 @@ def fid_from_features(real: torch.Tensor, fake: torch.Tensor) -> float:
     return float(fid)
 
 def precision_recall_knn(real: torch.Tensor, fake: torch.Tensor, k: int = 5) -> Tuple[float, float]:
+    # Limit number of data points for memory efficiency
+    limit = 5000
+    if real.shape[0] > limit:
+        real = real[torch.randperm(real.shape[0])[:limit]]
+    if fake.shape[0] > limit:
+        fake = fake[torch.randperm(fake.shape[0])[:limit]]
+
     dist_rr = torch.cdist(real, real)
     dist_rr.fill_diagonal_(float("inf"))
     radii_real = dist_rr.kthvalue(k, dim=1).values
