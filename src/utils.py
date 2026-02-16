@@ -17,7 +17,9 @@ class TinyImageDataset(Dataset):
         last_pn = self.patch_nums[-1]
         ps = self.patch_size
         
-        img = torch.from_numpy(np.array(self.dataset['image'][index])) #(h,w,c)
+        img_np = np.array(self.dataset['image'][index]).astype(np.float32)
+        img_tensor = torch.from_numpy(img_np)
+        img = (img_tensor / 127.5) - 1.0 #normalization
         img = img.view(last_pn,ps,last_pn,ps,img.shape[-1])
         img = img.permute(0,2,1,3,4).contiguous()
         img = img.view(last_pn,last_pn,-1) # (num_patch,num_patch,768) for patch of size 16x6x3
@@ -30,5 +32,6 @@ class TinyImageDataset(Dataset):
             x_BLCv_wo_first_l.append(residual.squeeze(0).reshape(pn**2,-1))
             reconstructed = F.interpolate(residual,size=(last_pn,last_pn),mode='bicubic')
             img = img - reconstructed
-        
+
+        x_BLCv_wo_first_l = torch.cat(x_BLCv_wo_first_l, dim=0)
         return x_BLCv_wo_first_l, label_b

@@ -150,7 +150,7 @@ class VAR(nn.Module):
         
         cur_L = 0
         f_hat = sos.new_zeros(B, self.pixel_dim, self.patch_nums[-1], self.patch_nums[-1])
-        print(f_hat.shape)
+        #print(f_hat.shape)
 
         for b in self.blocks: b.attn.kv_caching(True)
         for si, pn in enumerate(self.patch_nums):   # si: i-th segment
@@ -239,7 +239,7 @@ class VAR(nn.Module):
                             s += p.view(-1)[0] * 0
                     x_BLC[0, 0, 0] += s
 
-            return self.unflatten(self.out_proj(x_BLC)), x_BLC
+            return self.out_proj(x_BLC), x_BLC
         
     def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
         if init_std < 0: init_std = (1 / self.C / 3) ** 0.5     # init_std < 0: automated
