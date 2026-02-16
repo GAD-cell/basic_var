@@ -169,7 +169,7 @@ class VAR(nn.Module):
             projs = (1 + t) * projs[:B] - t * projs[B:]
             
             h_BChw = projs.transpose_(1, 2).reshape(B, self.pixel_dim, pn, pn)
-            if pn != self.patch_nums:
+            if pn != self.patch_nums[-1]:
                 h_BChw = F.interpolate(h_BChw, size=(self.patch_nums[-1], self.patch_nums[-1]), mode='bicubic')
             f_hat.add_(h_BChw) 
             if si != self.num_stages_minus_1:   # prepare for next stage
@@ -181,7 +181,9 @@ class VAR(nn.Module):
 
         for b in self.blocks: b.attn.kv_caching(False)
         
-        f_hat = self.unflatten(f_hat.add_(1).mul_(0.5).reshape(B,-1,self.pixel_dim)) # de-normalize, from [-1, 1] to [0, 1]
+        f_hat = f_hat.add_(1).mul_(0.5)  # Normalisation
+        f_hat = f_hat.view(B, self.pixel_dim, -1).transpose(1, 2)  # (B, L, pixel_dim)
+        f_hat = self.unflatten(f_hat)  # (B, L, C, P, P)
         B, L, C, P, _ = f_hat.shape
 
         grid_size = int(L**0.5) 

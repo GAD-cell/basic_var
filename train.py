@@ -1,11 +1,34 @@
 import os
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 from torch import optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from src.models.var import VAR
 from src.utils import TinyImageDataset
+
+def save_generated_image(model, epoch, step, device, save_dir):
+    model.eval()
+    with torch.no_grad():
+        inference = model.autoregressive_infer_cfg(B=1)
+        
+        patches = inference[0, -16:, :]
+        patches_reshaped = patches.view(16, 3, 16, 16)
+        grid = patches_reshaped.view(4, 4, 3, 16, 16)
+        final_image = grid.permute(2, 0, 3, 1, 4).contiguous().view(3, 64, 64)
+        
+        img_np = final_image.permute(1, 2, 0).cpu().numpy()
+        img_np = (img_np + 1.0) / 2.0
+        img_np = np.clip(img_np, 0, 1)
+        
+        plt.figure(figsize=(4, 4))
+        plt.imshow(img_np)
+        plt.axis('off')
+        plt.title(f"Epoch {epoch} - Step {step}")
+        plt.savefig(os.path.join(save_dir, f"gen_e{epoch}_s{step}.png"))
+        plt.close()
+    model.train()
 
 def train():
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -19,10 +42,13 @@ def train():
     batch_size = 32
     num_epochs = 100
     save_interval = 5
+    gen_interval = 100
     learning_rate = 3e-4
-    save_dir = "checkpoints"
-
-    os.makedirs(save_dir, exist_ok=True)
+    
+    checkpoint_dir = "checkpoints"
+    output_dir = "outputs"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     dataset = TinyImageDataset()
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -40,6 +66,7 @@ def train():
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = torch.nn.MSELoss()
 
+    global_step = 0
     model.train()
 
     for epoch in range(num_epochs):
@@ -52,18 +79,19 @@ def train():
             x_input = scale_seq[:, patch_nums[0]**2:]
             
             optimizer.zero_grad()
-            
             scale_seq_pred, _ = model(label_b, x_input)
-            
             loss = criterion(scale_seq_pred, scale_seq)
-            
             loss.backward()
             optimizer.step()
             
+            global_step += 1
             progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
+            if global_step % gen_interval == 0:
+                save_generated_image(model, epoch + 1, global_step, device, output_dir)
+
         if (epoch + 1) % save_interval == 0:
-            checkpoint_path = os.path.join(save_dir, f"model_epoch_{epoch+1}.pth")
+            checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch+1}.pth")
             torch.save(model.state_dict(), checkpoint_path)
 
 if __name__ == "__main__":
