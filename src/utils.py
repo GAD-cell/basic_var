@@ -17,7 +17,11 @@ class TinyImageDataset(Dataset):
         last_pn = self.patch_nums[-1]
         ps = self.patch_size
         
-        img_np = np.array(self.dataset['image'][index]).astype(np.float32)
+        img_raw = self.dataset['image'][index]
+        if img_raw.mode != 'RGB':
+            img_raw = img_raw.convert('RGB')
+            
+        img_np = np.array(img_raw).astype(np.float32)
         img_tensor = torch.from_numpy(img_np)
         img = (img_tensor / 127.5) - 1.0 #normalization
         img = img.view(last_pn,ps,last_pn,ps,img.shape[-1])
