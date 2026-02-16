@@ -22,9 +22,9 @@ class TinyImageDataset(Dataset):
         img = img.permute(0,2,1,3,4).contiguous()
         img = img.view(last_pn,last_pn,-1) # (num_patch,num_patch,768) for patch of size 16x6x3
         img = img.permute(2,0,1).unsqueeze(0)
-        x_BLCv_wo_first_l = []
+        
         label_b = self.dataset['label'][index]
-
+        x_BLCv_wo_first_l = []
         for pn in self.patch_nums:
             residual = F.interpolate(img,size=(pn,pn),mode='bicubic')
             x_BLCv_wo_first_l.append(residual.squeeze(0).reshape(pn**2,-1))

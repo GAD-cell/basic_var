@@ -15,7 +15,8 @@ num_classes = 200
 model = VAR(num_classes=num_classes, 
             num_channels=num_channels, 
             patch_nums=patch_nums, 
-            pixel_dim=embed_dim, 
+            pixel_dim=embed_dim,
+            man_dim=64, # 'manifold' dim  
             embed_dim=embed_dim)
 
 label_b = torch.randint(200,(b_size,))

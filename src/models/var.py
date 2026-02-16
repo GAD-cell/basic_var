@@ -18,7 +18,7 @@ class SharedAdaLin(nn.Linear):
 class VAR(nn.Module):
     def __init__(
         self,
-        num_classes=1000, depth=16, num_channels=3, patch_size=16, pixel_dim=1024, embed_dim=1024, num_heads=16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
+        num_classes=1000, depth=16, num_channels=3, patch_size=16, pixel_dim=1024, man_dim=64, embed_dim=1024, num_heads=16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
         norm_eps=1e-6, shared_aln=False, cond_drop_rate=0.1,
         attn_l2_norm=False,
         patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),   # 10 steps by default
@@ -110,6 +110,13 @@ class VAR(nn.Module):
         self.out_proj = nn.Linear(embed_dim, pixel_dim)
         self.unflatten = nn.Unflatten(dim=-1, unflattened_size=(num_channels,patch_size,patch_size))
 
+
+        #emb layer 
+        self.in_proj = nn.Sequential(
+            nn.Linear(pixel_dim,man_dim),
+            nn.Linear(man_dim,embed_dim)
+        )
+
         self.to(device)
     @torch.no_grad()
     def autoregressive_infer_cfg(
@@ -168,9 +175,10 @@ class VAR(nn.Module):
             if si != self.num_stages_minus_1:   # prepare for next stage
                 next_token_map = F.interpolate(h_BChw, size=(self.patch_nums[si+1], self.patch_nums[si+1]), mode='bicubic')
                 next_token_map = next_token_map.view(B, self.pixel_dim, -1).transpose(1, 2)
+                next_token_map = self.in_proj(next_token_map)
                 next_token_map += lvl_pos[:, cur_L:cur_L + self.patch_nums[si+1] ** 2]
                 next_token_map = next_token_map.repeat(2, 1, 1)   # double the batch sizes due to CFG
-        
+
         for b in self.blocks: b.attn.kv_caching(False)
         
         f_hat = self.unflatten(f_hat.add_(1).mul_(0.5).reshape(B,-1,self.pixel_dim)) # de-normalize, from [-1, 1] to [0, 1]
@@ -196,6 +204,8 @@ class VAR(nn.Module):
             
             device_type = x_BLCv_wo_first_l.device.type
             with torch.amp.autocast(device_type=device_type, enabled=False):
+                x_BLCv_wo_first_l = self.in_proj(x_BLCv_wo_first_l)
+
                 sos = torch.randn(B, self.first_l, self.C, device=self.device)
                 sos += self.pos_start.expand(B, self.first_l, -1)
                 

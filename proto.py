@@ -1,4 +1,3 @@
-from datasets import load_dataset
 from src.utils import TinyImageDataset
 from torch.utils.data import DataLoader
 
