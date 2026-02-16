@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 from transformers import GPT2Config, GPT2Model
-from eval.fid import fid_from_features, precision_recall_knn
+from eval.fid import fid_from_features, precision_recall_knn, precision_recall_knn_blockwise
 from eval.features import get_dinov2_model, extract_dinov2_features
 
 
@@ -449,7 +449,7 @@ def evaluate_model(
     print("Computing FID...")
     fid = fid_from_features(real_feats, fake_feats)
     print("Computing precision and recall...")
-    precision, recall = precision_recall_knn(real_feats, fake_feats, k=knn_k)
+    precision, recall = precision_recall_knn_blockwise(real_feats, fake_feats, k=knn_k)
     return {"fid": fid, "precision": precision, "recall": recall}
 
 
