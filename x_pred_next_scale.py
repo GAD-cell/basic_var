@@ -446,6 +446,7 @@ def _train_loop(
     train_cfg: TrainConfig,
     ld: DataLoader,
     real_features_path: str,
+    progress_bar: bool = False,
 ):
     print("Starting training...")
     device = torch.device(train_cfg.device)
@@ -458,7 +459,11 @@ def _train_loop(
     for ep in range(train_cfg.epochs):
         model.train()
         optim.zero_grad(set_to_none=True)
-        pbar = tqdm(ld, desc=f"Epoch {ep+1}", leave=False)
+        if progress_bar:
+            pbar = tqdm(ld, desc=f"Epoch {ep+1}", leave=False)
+        else:
+            pbar = ld
+            print(f"Epoch {ep+1}/{train_cfg.epochs}")
         for i, batch in enumerate(pbar):
             if scaler is not None:
                 with torch.cuda.amp.autocast():
@@ -466,8 +471,8 @@ def _train_loop(
             else:
                 loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             # train_one_batch returns loss scaled by grad_accum
-
-            pbar.set_postfix(loss=f"{(loss*train_cfg.grad_accum).item():.6f}")
+            if progress_bar:
+                pbar.set_postfix(loss=f"{(loss*train_cfg.grad_accum).item():.6f}")
 
 
             if (i + 1) % train_cfg.grad_accum == 0:
@@ -569,7 +574,7 @@ def train_cifar10(
     else:
         print(f"[cifar10] using existing feature at {features_path}")
 
-    _train_loop(model, train_cfg, ld, str(features_path))
+    _train_loop(model, train_cfg, ld, str(features_path), progress_bar=False)
 
 def test():
     cfg = XPredConfig(scales=(16, 32, 64), patch_size=16, d_model=256, n_layer=4, n_head=4, decoder_type="var")
