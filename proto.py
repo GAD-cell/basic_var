@@ -1,10 +1,10 @@
 from datasets import load_dataset
 from src.utils import TinyImageDataset
+from torch.utils.data import DataLoader
 
 def main():
     dataset = TinyImageDataset()
-
-    dataset.__getitem__(0)
+    dataloader = DataLoader(dataset, batch_size=3, shuffle=True)
 
 
 if __name__ == "__main__":

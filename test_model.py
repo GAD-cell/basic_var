@@ -12,7 +12,7 @@ embed_dim = num_channels*(patch_size**2)
 b_size = 3
 num_classes = 200
 
-model = VAR(num_classes=200, 
+model = VAR(num_classes=num_classes, 
             num_channels=num_channels, 
             patch_nums=patch_nums, 
             pixel_dim=embed_dim, 
