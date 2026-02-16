@@ -1,5 +1,5 @@
-torch~=2.1.0
-
+torch
+datasets
 Pillow
 huggingface_hub
 numpy
