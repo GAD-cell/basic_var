@@ -44,5 +44,12 @@ print(scale_seq_pred.shape,latent_rep.shape)
 
 loss = torch.nn.MSELoss()(scale_seq_pred, scale_seq.to(device))
 print(loss)
-#plt.imshow(inference[0,:,:].permute(1,2,0).cpu().numpy())
+patches = scale_seq_pred[0, -16:, :]
+patches_reshaped = patches.view(16, 3, 16, 16)
+grid = patches_reshaped.view(4, 4, 3, 16, 16)
+final_image = grid.permute(2, 0, 3, 1, 4).contiguous().view(3, 64, 64)
+plt.imshow(final_image.permute(1, 2, 0).detach().cpu().numpy())
+plt.axis('off')
+plt.show()
+#plt.imshow(model.unflatten(scale_seq_prd[0,:,:])[:,:].permute(1,2,0).cpu().numpy())
 #plt.show()
