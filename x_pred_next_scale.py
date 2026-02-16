@@ -412,6 +412,7 @@ def evaluate_model(
     real_features_path: str,
     real_subset: int,
     knn_k: int,
+    progress_bar: bool = False,
 ):
     print("Evaluating model...")
     device = next(model.parameters()).device
@@ -493,6 +494,7 @@ def _train_loop(
                 real_features_path=real_features_path,
                 real_subset=train_cfg.real_subset,
                 knn_k=train_cfg.knn_k,
+                progress_bar=progress_bar,
             )
             print(f"[eval ep {ep+1}] {metrics}")
 
