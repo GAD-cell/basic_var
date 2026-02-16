@@ -29,5 +29,5 @@ print(img.shape,latent_rep.shape)
 inference = model.autoregressive_infer_cfg(B=3) #(b,c,h,w)
 print(inference.shape)
 
-plt.imshow(inference[0,:,:].permute(1,2,0).cpu().numpy())
-plt.show()
+#plt.imshow(inference[0,:,:].permute(1,2,0).cpu().numpy())
+#plt.show()
