@@ -30,6 +30,67 @@ def save_generated_image(model, epoch, step, device, save_dir):
         plt.close()
     model.train()
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import transforms
+
+class DINOLoss(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.device = device
+        
+        print("Loading DINOv2...")
+        self.dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14').to(device)
+        self.dino.eval()
+        
+        for param in self.dino.parameters():
+            param.requires_grad = False
+            
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                              std=[0.229, 0.224, 0.225])
+
+    def forward(self, scale_seq_pred, scale_seq, patch_nums):
+        """
+        scale_seq_pred: (B, Total_Patches, Embed_Dim) - Prédictions (pixels aplatis)
+        scale_seq: (B, Total_Patches, Embed_Dim) - Target (pixels aplatis)
+        patch_nums: Liste des échelles [1, 2, 3, 4]
+        """
+        total_loss = 0
+        start_idx = 0
+        patch_size = 16
+        
+        for pn in patch_nums:
+            num_patches = pn**2
+            end_idx = start_idx + num_patches
+
+            pred_chunk = scale_seq_pred[:, start_idx:end_idx, :]
+            target_chunk = scale_seq[:, start_idx:end_idx, :]
+
+            pred_imgs = pred_chunk.reshape(-1, 3, patch_size, patch_size)
+            target_imgs = target_chunk.reshape(-1, 3, patch_size, patch_size)
+            
+            pred_imgs = (pred_imgs + 1.0) * 0.5
+            target_imgs = (target_imgs + 1.0) * 0.5
+            
+            pred_large = F.interpolate(pred_imgs, size=(224, 224), mode='bicubic', align_corners=False)
+            target_large = F.interpolate(target_imgs, size=(224, 224), mode='bicubic', align_corners=False)
+            
+            pred_large = self.normalize(pred_large)
+            target_large = self.normalize(target_large)
+            
+            with torch.no_grad():
+                target_features = self.dino(target_large)
+            
+            pred_features = self.dino(pred_large)
+
+            similarity = F.cosine_similarity(pred_features, target_features, dim=-1).mean()
+            total_loss += (1 - similarity)
+            
+            start_idx = end_idx
+
+        return total_loss / len(patch_nums)
+
 def train():
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     
@@ -65,6 +126,7 @@ def train():
 
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = torch.nn.MSELoss()
+    dino_criterion = DINOLoss(device)
 
     global_step = 0
     model.train()
@@ -80,12 +142,15 @@ def train():
             
             optimizer.zero_grad()
             scale_seq_pred, _ = model(label_b, x_input)
-            loss = criterion(scale_seq_pred, scale_seq)
-            loss.backward()
+            loss_mse = criterion(scale_seq_pred, scale_seq)
+            loss_dino = dino_criterion(scale_seq_pred, scale_seq, patch_nums)
+            
+            total_loss = loss_mse + 0.1 * loss_dino
+            total_loss.backward()
             optimizer.step()
             
             global_step += 1
-            progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+            progress_bar.set_postfix(loss=f"{total_loss.item():.4f}")
 
             if global_step % gen_interval == 0:
                 save_generated_image(model, epoch + 1, global_step, device, output_dir)
