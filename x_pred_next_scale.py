@@ -48,6 +48,7 @@ class TrainConfig:
     lr: float = 3e-4
     weight_decay: float = 1e-4
     grad_accum: int = 1
+    ckpt_every_n_steps: int = 0
     eval_every_n_epochs: int = 10
     n_eval_samples: int = 5000
     real_features_path: str = "data/"
@@ -461,6 +462,21 @@ def evaluate_model(
     precision, recall = precision_recall_knn_blockwise(real_feats, fake_feats, k=knn_k)
     return {"fid": fid, "precision": precision, "recall": recall}
 
+def save_model(model: XPredNextScale, filename: str, train_cfg: TrainConfig, step: int, epoch: int, fid: Optional[float] = None):
+    ckpt_dir = Path("checkpoints")
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / filename
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "step": step,
+            "epoch": epoch,
+            "fid": fid,
+            "train_cfg": vars(train_cfg),
+            "model_cfg": vars(model.cfg),
+        },
+        ckpt_path,
+    )
 
 def _train_loop(
     model: XPredNextScale,
@@ -472,6 +488,10 @@ def _train_loop(
     print("Starting training...")
     device = torch.device(train_cfg.device)
     model.to(device)
+
+    ckpt_dir = Path("checkpoints")
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    best_fid = float("inf")
 
     run = None
     if train_cfg.use_wandb:
@@ -503,7 +523,7 @@ def _train_loop(
             print(f"Epoch {ep+1}/{train_cfg.epochs}")
         for i, batch in enumerate(pbar):
             if scaler is not None:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast():
                     loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             else:
                 loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
@@ -531,6 +551,7 @@ def _train_loop(
                     log_payload["grad_norm"] = grad_norm
                 wandb.log(log_payload, step=step)
 
+            # Weight update
             if (i + 1) % train_cfg.grad_accum == 0:
                 if scaler is not None:
                     scaler.step(optim)
@@ -539,6 +560,9 @@ def _train_loop(
                     optim.step()
                 optim.zero_grad(set_to_none=True)
                 scheduler.step()
+
+            if train_cfg.ckpt_every_n_steps and step % train_cfg.ckpt_every_n_steps == 0:
+                    save_model(model, f"step_{step}.pt", train_cfg, step, ep + 1)
             step += 1
 
         if (ep + 1) % train_cfg.eval_every_n_epochs == 0:
@@ -552,6 +576,10 @@ def _train_loop(
                 knn_k=train_cfg.knn_k,
             )
             print(f"[eval ep {ep+1}] {metrics}")
+            fid_val = float(metrics.get("fid", float("inf")))
+            if fid_val < best_fid:
+                best_fid = fid_val
+                save_model(model, f"best_fid_{best_fid:.2f}.pt", train_cfg, step, ep + 1, fid=best_fid)
             if train_cfg.use_wandb and run is not None:
                 wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
 

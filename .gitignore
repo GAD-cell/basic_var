@@ -8,6 +8,10 @@ env/
 data/*
 !data/.gitkeep
 
+# Checkpoints (keep folder, ignore contents)
+checkpoints/*
+!checkpoints/.gitkeep
+
 # Python cache/bytecode
 __pycache__/
 *.py[cod]
