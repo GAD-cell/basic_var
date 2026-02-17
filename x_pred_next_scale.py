@@ -38,6 +38,8 @@ class XPredConfig:
     use_noise_seed: bool = True
     noise_dim: int = 256
     noise_scale: float = 1.0
+    input_noise_base: float = 0.0
+    input_noise_decay: float = 0.7
 
 
 @dataclass
@@ -251,6 +253,12 @@ class XPredNextScale(nn.Module):
         imgs_k = [F.adaptive_avg_pool2d(imgs_bchw, (s, s)) for s in self.scales]
         targets = [patchify(im, self.p) for im in imgs_k]  # P_k
 
+        def add_scale_noise(x: torch.Tensor, k: int) -> torch.Tensor:
+            if self.cfg.input_noise_base <= 0:
+                return x
+            sigma = self.cfg.input_noise_base * (self.cfg.input_noise_decay ** k)
+            return x + torch.randn_like(x) * sigma
+
         # build input blocks
         blocks = []
         # scale 1: start token (learned), optionally add noise + cond
@@ -259,6 +267,7 @@ class XPredNextScale(nn.Module):
         if self.cfg.use_noise_seed:
             noise = torch.randn(B, self.cfg.noise_dim, device=device)
             start = start + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
+        start = add_scale_noise(start, 0)
         blocks.append(start)
 
         # scales 2..K: upsample previous scale to current size, then patchify
@@ -266,7 +275,9 @@ class XPredNextScale(nn.Module):
             prev = imgs_k[k - 1]
             up = F.interpolate(prev, size=(self.scales[k], self.scales[k]), mode="bicubic", align_corners=False)
             patches = patchify(up, self.p)
-            blocks.append(self.patch_embed(patches))
+            block = self.patch_embed(patches)
+            block = add_scale_noise(block, k)
+            blocks.append(block)
 
         inputs = torch.cat(blocks, dim=1)  # [B, L, d_model]
 
@@ -330,6 +341,9 @@ class XPredNextScale(nn.Module):
         if self.cfg.use_noise_seed:
             noise = torch.randn(B, self.cfg.noise_dim, device=device)
             start = start + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
+        if self.cfg.input_noise_base > 0:
+            sigma0 = self.cfg.input_noise_base
+            start = start + torch.randn_like(start) * sigma0
 
         # add pos/scale/cond
         pos = self.pos_1L.to(device=device)
@@ -376,6 +390,9 @@ class XPredNextScale(nn.Module):
             up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
             patches = patchify(up, self.p)
             inp = self.patch_embed(patches)
+            if self.cfg.input_noise_base > 0:
+                sigma = self.cfg.input_noise_base * (self.cfg.input_noise_decay ** k)
+                inp = inp + torch.randn_like(inp) * sigma
             inp_cond = add_cond(inp, labels)
             inp_uncond = add_cond(inp, uncond)
 
