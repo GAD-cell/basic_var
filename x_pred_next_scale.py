@@ -690,7 +690,7 @@ def train(model: XPredNextScale, train_cfg: TrainConfig):
     sK = model.scales[-1]
     ld = build_dataloader(train_cfg.train_data_path, sK, train_cfg.batch_size, train_cfg.workers)
     train_ds = build_imagefolder_dataset(train_cfg.train_data_path, sK)
-    _train_loop(model, train_cfg, ld, train_cfg.real_features_path, train_ds=train_ds)
+    _train_loop(model, train_cfg, ld, train_cfg.real_features_path)
 
 
 def _preprocess_cifar10_features(
@@ -759,7 +759,7 @@ def train_cifar10(
     else:
         print(f"[cifar10] using existing feature at {features_path}")
 
-    _train_loop(model, train_cfg, train_ds, str(features_path), progress_bar=progress_bar, train_ds=train_ds)
+    _train_loop(model, train_cfg, train_ds, str(features_path), progress_bar=progress_bar)
 
 def test():
     cfg = XPredConfig(scales=(16, 32, 64), patch_size=16, d_model=256, n_layer=4, n_head=4, decoder_type="var")
