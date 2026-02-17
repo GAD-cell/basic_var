@@ -13,7 +13,7 @@ class XPredVARDecoder(nn.Module):
         d_model: int,
         depth: int,
         num_heads: int,
-        mlp_ratio: float = 4.0,
+        mlp_ratio: float = 2.0,
         drop: float = 0.0,
         attn_drop: float = 0.0,
         drop_path_rate: float = 0.0,
