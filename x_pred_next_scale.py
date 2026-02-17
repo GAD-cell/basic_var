@@ -795,9 +795,9 @@ if __name__ == "__main__":
         attn_l2_norm=True,
         shared_aln=False,
         cond_drop_prob=0.1,
-        use_noise_seed=True,
-        noise_dim=32,
-        noise_scale=0.5,
+        use_noise_seed=False,
+        input_noise_base=0.05,
+        input_noise_decay=0.6,
         num_classes=10,
     )
 
