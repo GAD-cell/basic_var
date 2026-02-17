@@ -663,6 +663,7 @@ if __name__ == "__main__":
         use_noise_seed=True,
         noise_dim=32,
         noise_scale=0.5,
+        num_classes=10,
     )
 
     model = XPredNextScale(cfg)
