@@ -12,6 +12,10 @@ data/*
 checkpoints/*
 !checkpoints/.gitkeep
 
+# Mosaics (keep folder, ignore contents)
+mosaics/*
+!mosaics/.gitkeep
+
 # Python cache/bytecode
 __pycache__/
 *.py[cod]

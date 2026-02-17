@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 try:
     import wandb  # type: ignore
@@ -412,6 +413,17 @@ def build_dataloader(train_path: str, img_size: int, batch_size: int, workers: i
     return DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True, drop_last=True)
 
 
+def build_imagefolder_dataset(train_path: str, img_size: int):
+    tfm = transforms.Compose(
+        [
+            transforms.Resize(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(img_size),
+            transforms.ToTensor(),
+        ]
+    )
+    return datasets.ImageFolder(train_path, transform=tfm)
+
+
 def train_one_batch(model: nn.Module, batch, optimizer, scaler, grad_accum: int):
     imgs, labels = batch
     device = next(model.parameters()).device
@@ -424,6 +436,7 @@ def train_one_batch(model: nn.Module, batch, optimizer, scaler, grad_accum: int)
     else:
         loss.backward()
     return loss.detach()
+
 
 
 @torch.no_grad()
@@ -462,7 +475,14 @@ def evaluate_model(
     precision, recall = precision_recall_knn_blockwise(real_feats, fake_feats, k=knn_k)
     return {"fid": fid, "precision": precision, "recall": recall}
 
-def save_model(model: XPredNextScale, filename: str, train_cfg: TrainConfig, step: int, epoch: int, fid: Optional[float] = None):
+def save_model(
+    model: XPredNextScale,
+    filename: str,
+    train_cfg: TrainConfig,
+    step: int,
+    epoch: int,
+    fid: Optional[float] = None,
+):
     ckpt_dir = Path("checkpoints")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = ckpt_dir / filename
@@ -478,16 +498,68 @@ def save_model(model: XPredNextScale, filename: str, train_cfg: TrainConfig, ste
         ckpt_path,
     )
 
+
+@torch.no_grad()
+def _save_mosaic(gen_imgs: torch.Tensor, nn_imgs: torch.Tensor, out_path: Path):
+    """
+    Save a 2-row mosaic: generated images on top, nearest neighbors below.
+    """
+    assert gen_imgs.shape == nn_imgs.shape
+    b = gen_imgs.shape[0]
+    stack = torch.cat([gen_imgs, nn_imgs], dim=0)
+    grid = make_grid(stack, nrow=b, padding=2)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    save_image(grid, out_path)
+
+
+@torch.no_grad()
+def _nearest_neighbors_mosaic(
+    model: XPredNextScale,
+    train_ds : datasets.ImageFolder,
+    real_features_path: str,
+    out_path: Path,
+    device: torch.device,
+    n_samples: int = 3,
+):
+    model.eval()
+    gen = model.generate(B=n_samples).clamp(0, 1)
+    dinov2 = get_dinov2_model(device)
+    gen_feats = extract_dinov2_features(dinov2, gen)
+
+    real_feats = torch.load(real_features_path, map_location="cpu")
+    if real_feats.dim() != 2:
+        raise ValueError(f"expected real features [N, D], got {tuple(real_feats.shape)}")
+    real_feats = real_feats.to(device)
+
+    dist = torch.cdist(gen_feats, real_feats)
+    nn_idx = dist.argmin(dim=1).tolist()
+    nn_imgs = []
+    for idx in nn_idx:
+        img, _ = train_ds[idx]
+        nn_imgs.append(img)
+    nn_imgs = torch.stack(nn_imgs, dim=0).to(device)
+
+    _save_mosaic(gen, nn_imgs, out_path)
+
 def _train_loop(
     model: XPredNextScale,
     train_cfg: TrainConfig,
-    ld: DataLoader,
+    train_ds: datasets.ImageFolder,
     real_features_path: str,
     progress_bar: bool = False,
 ):
     print("Starting training...")
     device = torch.device(train_cfg.device)
     model.to(device)
+
+    ld = DataLoader(
+        train_ds,
+        batch_size=train_cfg.batch_size,
+        shuffle=True,
+        num_workers=train_cfg.workers,
+        pin_memory=True,
+        drop_last=True,
+    )
 
     ckpt_dir = Path("checkpoints")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -510,7 +582,7 @@ def _train_loop(
 
     optim = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=train_cfg.epochs * len(ld))
-    scaler = torch.cuda.amp.GradScaler() if train_cfg.use_amp and device.type == "cuda" else None
+    scaler = torch.amp.GradScaler() if train_cfg.use_amp and device.type == "cuda" else None
 
     step = 0
     for ep in range(train_cfg.epochs):
@@ -561,8 +633,9 @@ def _train_loop(
                 optim.zero_grad(set_to_none=True)
                 scheduler.step()
 
-            if train_cfg.ckpt_every_n_steps and step % train_cfg.ckpt_every_n_steps == 0:
+                if train_cfg.ckpt_every_n_steps and step % train_cfg.ckpt_every_n_steps == 0:
                     save_model(model, f"step_{step}.pt", train_cfg, step, ep + 1)
+
             step += 1
 
         if (ep + 1) % train_cfg.eval_every_n_epochs == 0:
@@ -579,9 +652,18 @@ def _train_loop(
             fid_val = float(metrics.get("fid", float("inf")))
             if fid_val < best_fid:
                 best_fid = fid_val
-                save_model(model, f"best_fid_{best_fid:.2f}.pt", train_cfg, step, ep + 1, fid=best_fid)
+                save_model(model, "best.pt", train_cfg, step, ep + 1, fid=best_fid)
             if train_cfg.use_wandb and run is not None:
                 wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
+            mosaic_path = Path("mosaics") / f"mosaic_step_{step}.png"
+            _nearest_neighbors_mosaic(
+                model=model,
+                train_ds=train_ds,
+                real_features_path=real_features_path,
+                out_path=mosaic_path,
+                device=device,
+                n_samples=3,
+            )
 
     if train_cfg.use_wandb and run is not None:
         run.finish()
@@ -590,7 +672,8 @@ def _train_loop(
 def train(model: XPredNextScale, train_cfg: TrainConfig):
     sK = model.scales[-1]
     ld = build_dataloader(train_cfg.train_data_path, sK, train_cfg.batch_size, train_cfg.workers)
-    _train_loop(model, train_cfg, ld, train_cfg.real_features_path)
+    train_ds = build_imagefolder_dataset(train_cfg.train_data_path, sK)
+    _train_loop(model, train_cfg, ld, train_cfg.real_features_path, train_ds=train_ds)
 
 
 def _preprocess_cifar10_features(
@@ -641,14 +724,6 @@ def train_cifar10(
 
     print(f"Loading CIFAR-10 training data with image size {sK}x{sK}...")
     train_ds = datasets.CIFAR10(root=str(root), train=True, download=True, transform=tfm)
-    ld = DataLoader(
-        train_ds,
-        batch_size=train_cfg.batch_size,
-        shuffle=True,
-        num_workers=train_cfg.workers,
-        pin_memory=True,
-        drop_last=True,
-    )
 
     feature_split = feature_split.lower()
     if feature_split not in {"train", "test"}:
@@ -667,7 +742,7 @@ def train_cifar10(
     else:
         print(f"[cifar10] using existing feature at {features_path}")
 
-    _train_loop(model, train_cfg, ld, str(features_path), progress_bar=progress_bar)
+    _train_loop(model, train_cfg, train_ds, str(features_path), progress_bar=progress_bar, train_ds=train_ds)
 
 def test():
     cfg = XPredConfig(scales=(16, 32, 64), patch_size=16, d_model=256, n_layer=4, n_head=4, decoder_type="var")
