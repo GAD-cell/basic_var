@@ -587,9 +587,10 @@ def _train_loop(
         if wandb is None:
             raise RuntimeError("wandb is not installed but use_wandb=True")
         if not train_cfg.wandb_run_name:
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
             model_name = f"{model.cfg.decoder_type}-d{model.cfg.d_model}-L{model.cfg.n_layer}"
-            train_cfg.wandb_run_name = f"{ts}-dataset-{model_name}-ep{train_cfg.epochs}"
+            train_cfg.wandb_run_name = f"dataset-{model_name}-ep{train_cfg.epochs}"
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        train_cfg.wandb_run_name = ts + "-" + train_cfg.wandb_run_name
         run = wandb.init(
             project=train_cfg.wandb_project,
             name=train_cfg.wandb_run_name,
