@@ -587,7 +587,7 @@ def _train_loop(
         if wandb is None:
             raise RuntimeError("wandb is not installed but use_wandb=True")
         if not train_cfg.wandb_run_name:
-            model_name = f"{model.cfg.decoder_type}-d{model.cfg.d_model}-L{model.cfg.n_layer}"
+            model_name = f"{model.cfg.decoder_type}-d{model.cfg.d_model}-L{model.cfg.n_layer}-H{model.cfg.n_head}"
             train_cfg.wandb_run_name = f"dataset-{model_name}-ep{train_cfg.epochs}"
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         train_cfg.wandb_run_name = ts + "-" + train_cfg.wandb_run_name
@@ -613,7 +613,7 @@ def _train_loop(
             print(f"Epoch {ep+1}/{train_cfg.epochs}")
         for i, batch in enumerate(pbar):
             if scaler is not None:
-                with torch.amp.autocast():
+                with torch.amp.autocast(device_type=device.type):
                     loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             else:
                 loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
@@ -782,7 +782,7 @@ if __name__ == "__main__":
         real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
         device=device.type, 
         use_wandb=True,
-        wandb_run_name="cifar10-var-L4-d128-e1000"
+        wandb_run_name="cifar10-var-L4-H4-d128-e1000"
     )
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
