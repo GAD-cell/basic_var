@@ -647,7 +647,7 @@ def test():
 if __name__ == "__main__":
     device = pick_device()
     print(f"Using device: {device}")
-    train_cfg = TrainConfig(epochs=1000, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt", real_subset=50000, knn_k=3, use_amp=_use_amp(device), device=device.type)
+    train_cfg = TrainConfig(epochs=1000, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt", real_subset=50000, knn_k=3, use_amp=_use_amp(device), device=device.type, use_wandb=True)
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
         patch_size=4,
