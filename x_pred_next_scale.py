@@ -651,10 +651,10 @@ if __name__ == "__main__":
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
         patch_size=4,
-        d_model=256,
+        d_model=128,
         n_layer=4,
         n_head=4,
-        decoder_type="var",
+        decoder_type="gpt2",
         mlp_ratio=2.0,
         drop_path_rate=0.05,
         attn_l2_norm=True,
