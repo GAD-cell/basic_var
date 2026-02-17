@@ -9,6 +9,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
+try:
+    import wandb  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    wandb = None
 from transformers import GPT2Config, GPT2Model
 from eval.fid import fid_from_features, precision_recall_knn, precision_recall_knn_blockwise
 from eval.features import get_dinov2_model, extract_dinov2_features
@@ -50,6 +54,10 @@ class TrainConfig:
     knn_k: int = 3
     use_amp: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    use_wandb: bool = False
+    wandb_project: str = "x_pred_next_scale"
+    wandb_run_name: Optional[str] = None
+    wandb_entity: Optional[str] = None
 
 def pick_device():
     if torch.cuda.is_available():
@@ -464,10 +472,22 @@ def _train_loop(
     device = torch.device(train_cfg.device)
     model.to(device)
 
+    run = None
+    if train_cfg.use_wandb:
+        if wandb is None:
+            raise RuntimeError("wandb is not installed but use_wandb=True")
+        run = wandb.init(
+            project=train_cfg.wandb_project,
+            name=train_cfg.wandb_run_name,
+            entity=train_cfg.wandb_entity,
+            config={**vars(train_cfg), **vars(model.cfg)},
+        )
+
     optim = torch.optim.AdamW(model.parameters(), lr=train_cfg.lr, weight_decay=train_cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=train_cfg.epochs * len(ld))
     scaler = torch.cuda.amp.GradScaler() if train_cfg.use_amp and device.type == "cuda" else None
 
+    step = 0
     for ep in range(train_cfg.epochs):
         model.train()
         optim.zero_grad(set_to_none=True)
@@ -483,9 +503,28 @@ def _train_loop(
             else:
                 loss = train_one_batch(model, batch, optim, scaler, train_cfg.grad_accum)
             # train_one_batch returns loss scaled by grad_accum
+            grad_norm = None
+            if (i + 1) % train_cfg.grad_accum == 0:
+                if scaler is not None:
+                    scaler.unscale_(optim)
+                total_norm_sq = 0.0
+                for p in model.parameters():
+                    if p.grad is None:
+                        continue
+                    param_norm = p.grad.detach().data.norm(2)
+                    total_norm_sq += param_norm.item() ** 2
+                grad_norm = total_norm_sq ** 0.5
             if progress_bar:
-                pbar.set_postfix(loss=f"{(loss*train_cfg.grad_accum).item():.6f}")
+                postfix = {"loss": f"{(loss*train_cfg.grad_accum).item():.6f}"}
+                if grad_norm is not None:
+                    postfix["grad_norm"] = f"{grad_norm:.4f}"
+                pbar.set_postfix(postfix)
 
+            if train_cfg.use_wandb and run is not None:
+                log_payload = {"loss": (loss * train_cfg.grad_accum).item()}
+                if grad_norm is not None:
+                    log_payload["grad_norm"] = grad_norm
+                wandb.log(log_payload, step=step)
 
             if (i + 1) % train_cfg.grad_accum == 0:
                 if scaler is not None:
@@ -495,6 +534,7 @@ def _train_loop(
                     optim.step()
                 optim.zero_grad(set_to_none=True)
                 scheduler.step()
+            step += 1
 
         if (ep + 1) % train_cfg.eval_every_n_epochs == 0:
             model.eval()
@@ -507,6 +547,11 @@ def _train_loop(
                 knn_k=train_cfg.knn_k,
             )
             print(f"[eval ep {ep+1}] {metrics}")
+            if train_cfg.use_wandb and run is not None:
+                wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
+
+    if train_cfg.use_wandb and run is not None:
+        run.finish()
 
 
 def train(model: XPredNextScale, train_cfg: TrainConfig):
