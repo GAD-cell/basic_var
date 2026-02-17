@@ -1,4 +1,5 @@
 import math
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -476,6 +477,10 @@ def _train_loop(
     if train_cfg.use_wandb:
         if wandb is None:
             raise RuntimeError("wandb is not installed but use_wandb=True")
+        if not train_cfg.wandb_run_name:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            model_name = f"{model.cfg.decoder_type}-d{model.cfg.d_model}-L{model.cfg.n_layer}"
+            train_cfg.wandb_run_name = f"{ts}-dataset-{model_name}-ep{train_cfg.epochs}"
         run = wandb.init(
             project=train_cfg.wandb_project,
             name=train_cfg.wandb_run_name,
@@ -647,14 +652,24 @@ def test():
 if __name__ == "__main__":
     device = pick_device()
     print(f"Using device: {device}")
-    train_cfg = TrainConfig(epochs=1000, batch_size=32, eval_every_n_epochs=5, n_eval_samples=5000, real_features_path="data/cifar10_train_dinov2_features.pt", real_subset=50000, knn_k=3, use_amp=_use_amp(device), device=device.type, use_wandb=True)
+    train_cfg = TrainConfig(
+        epochs=1000, 
+        batch_size=32, 
+        eval_every_n_epochs=5, 
+        n_eval_samples=5000, 
+        real_features_path="data/cifar10_train_dinov2_features.pt", 
+        real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
+        device=device.type, 
+        use_wandb=True,
+        wandb_run_name="cifar10-var-L4-d128-e1000"
+    )
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
         patch_size=4,
         d_model=128,
         n_layer=4,
         n_head=4,
-        decoder_type="gpt2",
+        decoder_type="var",
         mlp_ratio=2.0,
         drop_path_rate=0.05,
         attn_l2_norm=True,
