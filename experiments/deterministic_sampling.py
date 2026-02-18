@@ -32,6 +32,8 @@ def generate_from_dataset_lowest_scale(
     train_ds,
     B: int,
     cfg_scale: float = 0.7,
+    use_noise_seed: bool = False,
+    noise_scale: float = 1.0,
     device: Optional[torch.device] = None,
 ):
     """
@@ -68,6 +70,10 @@ def generate_from_dataset_lowest_scale(
     # Start token (no noise)
     n1 = model.block_sizes[0]
     start = model.start_token.expand(B, n1, -1)
+    if use_noise_seed:
+        noise_dim = model.noise_proj.in_features
+        noise = torch.randn(B, noise_dim, device=device)
+        start = start + model.noise_proj(noise).unsqueeze(1) * noise_scale
 
     # Prep conditioning
     uncond = torch.full((B,), model.cfg.num_classes, device=device, dtype=torch.long)
@@ -160,7 +166,7 @@ def generate_from_cifar10_lowest_scale_and_save():
     model.eval()
 
     with torch.no_grad():
-        o_imgs, gen_imgs = generate_from_dataset_lowest_scale(model, dataset, B, cfg_scale=cfg_scale, device=device)
+        o_imgs, gen_imgs = generate_from_dataset_lowest_scale(model, dataset, B, cfg_scale=cfg_scale, device=device, use_noise_seed=True)
     
     print("Saving generated images to deterministic_sampling.png ...")
     # Save mosaic of original and generated images
