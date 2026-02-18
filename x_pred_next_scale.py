@@ -289,8 +289,8 @@ def _train_loop(
                 optim.zero_grad(set_to_none=True)
                 scheduler.step()
 
-                if train_cfg.ckpt_every_n_steps and step % train_cfg.ckpt_every_n_steps == 0:
-                    save_model(model, f"step_{step}.pt", train_cfg, step, ep + 1)
+            if train_cfg.ckpt_every_n_steps and step % train_cfg.ckpt_every_n_steps == 0:
+                save_model(model, f"step_{step}.pt", train_cfg, step, ep + 1)
 
             step += 1
 
@@ -420,7 +420,8 @@ if __name__ == "__main__":
         real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
         device=device.type, 
         use_wandb=True,
-        wandb_run_name="cifar10-var-L4-H4-d128-e1000"
+        wandb_run_name="cifar10-var-L4-H4-d128-e1000",
+        ckpt_every_n_steps=40_000,
     )
     cfg = XPredConfig(
         scales=(4, 8, 16, 32),
@@ -434,8 +435,10 @@ if __name__ == "__main__":
         attn_l2_norm=True,
         shared_aln=False,
         cond_drop_prob=0.1,
-        use_noise_seed=False,
-        input_noise_base=0.08,
+        use_noise_seed=True,
+        noise_dim = 4*4*3, # patch dimension
+        noise_scale = 1.0,
+        input_noise_base=0.0,
         input_noise_decay=0.6,
         num_classes=10,
     )
