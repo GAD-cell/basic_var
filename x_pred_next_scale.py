@@ -435,7 +435,7 @@ if __name__ == "__main__":
         shared_aln=False,
         cond_drop_prob=0.1,
         use_noise_seed=False,
-        input_noise_base=0.05,
+        input_noise_base=0.08,
         input_noise_decay=0.6,
         num_classes=10,
     )

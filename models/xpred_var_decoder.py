@@ -365,7 +365,7 @@ class XPredNextScale(nn.Module):
         self,
         B: int,
         labels: Optional[torch.Tensor] = None,
-        cfg_scale: float = 1.5,
+        cfg_scale: float = 0.7,
     ) -> torch.Tensor:
         """
         Returns generated image at the largest scale, shape [B, 3, sK, sK].
