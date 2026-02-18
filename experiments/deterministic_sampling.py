@@ -152,7 +152,7 @@ def pick_device():
         return torch.device("cpu")
 
 def generate_from_cifar10_lowest_scale_and_save():
-    ckpt_file : str = "checkpoints/best.pt"
+    ckpt_file : str = "checkpoints/step_120000.pt"
     B = 4
     cfg_scale = 0.7
 

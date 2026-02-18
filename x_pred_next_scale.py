@@ -413,7 +413,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
     train_cfg = TrainConfig(
         epochs=1000, 
-        batch_size=32, 
+        batch_size=64, 
         eval_every_n_epochs=5, 
         n_eval_samples=5000, 
         real_features_path="data/cifar10_train_dinov2_features.pt", 
