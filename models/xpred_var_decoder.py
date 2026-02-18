@@ -302,9 +302,9 @@ class XPredNextScale(nn.Module):
 
         # build input blocks
         blocks = []
-        # scale 1: start token (learned), optionally add noise + cond
+        # scale 1: condition embedding, optionally add noise + cond
         n1 = self.block_sizes[0]
-        start = self.start_token.expand(B, n1, -1)
+        start = self._encode_condition(labels, B, device).unsqueeze(1).expand(-1, n1, -1)
         if self.cfg.use_noise_seed:
             noise = torch.randn(B, self.cfg.noise_dim, device=device)
             start = start + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
@@ -329,8 +329,7 @@ class XPredNextScale(nn.Module):
             scale_ids.extend([k] * n)
         scale_ids = torch.tensor(scale_ids, device=device)
         scale = self.scale_embed(scale_ids).unsqueeze(0)
-        cond = self._encode_condition(labels, B, device).unsqueeze(1)
-        inputs = inputs + pos + scale + cond
+        inputs = inputs + pos + scale
 
         targets = torch.cat(targets, dim=1)  # [B, L, patch_dim]
         return inputs, targets
@@ -376,17 +375,7 @@ class XPredNextScale(nn.Module):
             labels = torch.randint(0, self.cfg.num_classes, (B,), device=device)
         uncond = torch.full((B,), self.cfg.num_classes, device=device, dtype=torch.long)
 
-        # scale 1 input (start token)
-        n1 = self.block_sizes[0]
-        start = self.start_token.expand(B, n1, -1)
-        if self.cfg.use_noise_seed:
-            noise = torch.randn(B, self.cfg.noise_dim, device=device)
-            start = start + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
-        if self.cfg.input_noise_base > 0:
-            sigma0 = self.cfg.input_noise_base
-            start = start + torch.randn_like(start) * sigma0
-
-        # add pos/scale/cond
+        # build pos/scale once
         pos = self.pos_1L.to(device=device)
         scale_ids = []
         for k, n in enumerate(self.block_sizes):
@@ -394,15 +383,31 @@ class XPredNextScale(nn.Module):
         scale_ids = torch.tensor(scale_ids, device=device)
         scale = self.scale_embed(scale_ids).unsqueeze(0)
 
-        def add_cond(x, y):
-            return x + pos[:, : x.shape[1]] + scale[:, : x.shape[1]] + self.class_embed(y).unsqueeze(1)
+        def add_pos(x, offset):
+            # If you still want scale embedding, keep "+ scale[...]"
+            return x + pos[:, offset:offset + x.shape[1]] + scale[:, offset:offset + x.shape[1]]
+            # If you want ONLY positional embedding, drop the "+ scale[...]"
 
         # first step: predict scale 1
-        if self.cfg.decoder_type == "var":
-            self.decoder.enable_kv_cache(True)
+        offset = 0
+        n1 = self.block_sizes[0]
 
-        inp_cond = add_cond(start, labels)
-        inp_uncond = add_cond(start, uncond)
+        # class conditioning only for first block
+        start_cond = self._encode_condition(labels, B, device).unsqueeze(1).expand(-1, n1, -1)
+        start_uncond = self._encode_condition(uncond, B, device).unsqueeze(1).expand(-1, n1, -1)
+
+        # optional noise on start (keep if desired)
+        if self.cfg.use_noise_seed:
+            noise = torch.randn(B, self.cfg.noise_dim, device=device)
+            start_cond = start_cond + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
+            start_uncond = start_uncond + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
+        if self.cfg.input_noise_base > 0:
+            sigma0 = self.cfg.input_noise_base
+            start_cond = start_cond + torch.randn_like(start_cond) * sigma0
+            start_uncond = start_uncond + torch.randn_like(start_uncond) * sigma0
+
+        inp_cond = add_pos(start_cond, offset)
+        inp_uncond = add_pos(start_uncond, offset)
 
         if self.cfg.decoder_type == "gpt2":
             past = None
@@ -426,6 +431,7 @@ class XPredNextScale(nn.Module):
         img_k = unpatchify(pred, self.p, s1, s1)
 
         # subsequent scales
+        offset += n1
         for k in range(1, self.num_scales):
             sk = self.scales[k]
             up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
@@ -434,10 +440,13 @@ class XPredNextScale(nn.Module):
             if self.cfg.input_noise_base > 0:
                 sigma = self.cfg.input_noise_base * (self.cfg.input_noise_decay ** k)
                 inp = inp + torch.randn_like(inp) * sigma
-            inp_cond = add_cond(inp, labels)
-            inp_uncond = add_cond(inp, uncond)
+
+            inp = add_pos(inp, offset)
 
             if self.cfg.decoder_type == "gpt2":
+                # adding class embedding at each scale to match CFG design
+                inp_cond = inp_cond + self.class_embed(labels).unsqueeze(1)
+                inp_uncond = inp_uncond + self.class_embed(uncond).unsqueeze(1)
                 out_cond = self.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
                 out_uncond = self.decoder(inputs_embeds=inp_uncond, use_cache=True, past_key_values=past)
                 h_cond = out_cond.last_hidden_state
@@ -446,13 +455,16 @@ class XPredNextScale(nn.Module):
             else:
                 cond_vec = self._encode_condition(labels, B, device)
                 uncond_vec = self._encode_condition(uncond, B, device)
-                h_cond = self.decoder(inp_cond, cond_vec, attn_bias=None)
-                h_uncond = self.decoder(inp_uncond, uncond_vec, attn_bias=None)
+                # no explicit class embedding in the input (following original VAR implementation)
+                h_cond = self.decoder(inp, cond_vec, attn_bias=None)
+                h_uncond = self.decoder(inp, uncond_vec, attn_bias=None)
                 h_cond = self.decoder.apply_head_norm(h_cond, cond_vec)
                 h_uncond = self.decoder.apply_head_norm(h_uncond, uncond_vec)
             pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
 
             img_k = unpatchify(pred, self.p, sk, sk)
+
+            offset += self.block_sizes[k]
 
         if self.cfg.decoder_type == "var":
             self.decoder.enable_kv_cache(False)
