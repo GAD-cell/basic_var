@@ -105,6 +105,8 @@ class XPredConfig:
     num_classes: int = 1000
     cond_drop_prob: float = 0.1
     first_scale_noise_std: float = 0.0
+    loss: str = "mse" # "mse" or "sink" or "mse_wo_s1"
+    sink_lbda: float = 1.0
 
 
 def pick_device():
@@ -167,6 +169,91 @@ def build_blockwise_mask(block_sizes: List[int], device: torch.device) -> torch.
     mask = torch.zeros((L, L), device=device)
     mask = mask.masked_fill(~allow, float("-inf"))
     return mask.view(1, 1, L, L)
+
+def sinkhorn_loss(
+    y,
+    x,
+    epsilon=0.1,
+    n_iters=50
+):
+    """
+    Differentiable Sinkhorn loss between model(z) and x.
+
+    Parameters
+    ----------
+    y : Tensor (n, d)
+        Source samples (given by model(z) where z \sim \mathcal{N}(0,1))
+    x : Tensor (m, d)
+        Target samples
+    model : nn.Module
+        Transport map T_theta
+    epsilon : float
+        Entropic regularization
+    n_iters : int
+        Number of Sinkhorn iterations
+
+    Returns
+    -------
+    loss : scalar Tensor
+    """
+
+    n, m = y.shape[0], x.shape[0]
+    device = y.device
+
+    # Uniform marginals
+    a = torch.full((n,), 1.0 / n, device=device)
+    b = torch.full((m,), 1.0 / m, device=device)
+
+    # Cost matrix C_ij = ||y_i - x_j||^2
+    C = torch.cdist(y, x, p=2) ** 2  # (n, m)
+
+    # Log-domain Sinkhorn variables
+    log_a = torch.log(a)
+    log_b = torch.log(b)
+
+    u = torch.zeros_like(log_a)
+    v = torch.zeros_like(log_b)
+
+    # Sinkhorn iterations
+    for _ in range(n_iters):
+        u = log_a - torch.logsumexp(
+            (-C + u[:, None] + v[None, :]) / epsilon,
+            dim=1
+        )
+        v = log_b - torch.logsumexp(
+            (-C + u[:, None] + v[None, :]) / epsilon,
+            dim=0
+        )
+
+    # Transport plan π
+    pi = torch.exp(
+        (-C + u[:, None] + v[None, :]) / epsilon
+    )  # (n, m)
+
+    # Sinkhorn cost
+    loss = torch.sum(pi * C)
+
+    return loss
+
+def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int], lbda:float = 1.0):
+    """
+    Applies sinkorn loss for first scale block, and MSE for later ones
+    """
+    block_1_pred = preds[:, :block_sizes[0], :]
+    later_blocks_pred = preds[:, block_sizes[0]:, :]
+    block_1_target = targets[:, :block_sizes[0], :]
+    later_blocks_target = targets[:, block_sizes[0]: , :]
+    sink_loss = sinkhorn_loss(block_1_pred, block_1_target)
+    mse_loss = F.mse_loss(later_blocks_pred, later_blocks_target)
+    return mse_loss + lbda*sink_loss
+
+def loss_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int]):
+    block_s2sK_pred = preds[:, block_sizes[0]:, :]
+    blocks_s2sK_target = targets[:, block_sizes[0]: , :]
+    return F.mse_loss(block_s2sK_pred, blocks_s2sK_target)
+
+
+
 
 
 class XPredNextScale(nn.Module):
@@ -245,6 +332,16 @@ class XPredNextScale(nn.Module):
         if labels is None:
             labels = torch.full((B,), self.cfg.num_classes, device=device, dtype=torch.long)
         return self.class_embed(labels)
+    
+    def _loss(self, preds:torch.Tensor, targets:torch.Tensor):
+        if self.cfg.loss == "mse":
+            return F.mse_loss(preds, targets)
+        elif self.cfg.loss == "sink":
+            return loss_sinkorn_s1_mse_s2sK(preds, targets, self.patch_block_sizes, self.cfg.sink_lbda)
+        elif self.cfg.loss == "mse_wo_s1":
+            return loss_mse_s2sK(preds, targets, self.patch_block_sizes)
+        else:
+            raise ValueError("loss must be either mse or sink or mse_wo_s1")
 
     def _build_sinusoidal_pos(self) -> torch.Tensor:
         """
@@ -376,9 +473,10 @@ class XPredNextScale(nn.Module):
                 recon.append(recon_k)
                 offset += patch_num
             recon = torch.cat(recon, dim=1)
-            return F.mse_loss(recon, targets)
+            loss = self._loss(recon, targets)
+            return loss
         
-        return F.mse_loss(preds, targets)
+        return self._loss(preds, targets)
 
     @torch.no_grad()
     def generate(
