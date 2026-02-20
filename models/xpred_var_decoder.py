@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from models.basic_var import AdaLNBeforeHead, AdaLNSelfAttn
+from models.conv import ResidualConv
 
 
 class XPredVARDecoder(nn.Module):
@@ -230,6 +231,15 @@ class XPredNextScale(nn.Module):
 
         self.head = nn.Linear(cfg.d_model, self.patch_dim)
 
+        # Add conv modules after "unpatchify" for smoother images
+        self.post_unpatch_convs = nn.ModuleList()
+        for k in range(self.num_scales):
+            sk = self.scales[k]
+            convs = nn.Sequential(
+                ResidualConv(dim=3, kernel_size=3), # dim is number of channels
+            )
+            self.post_unpatch_convs.append(convs)
+
     def _encode_condition(self, labels: Optional[torch.Tensor], B: int, device: torch.device) -> torch.Tensor:
         if labels is None:
             labels = torch.full((B,), self.cfg.num_classes, device=device, dtype=torch.long)
@@ -350,7 +360,22 @@ class XPredNextScale(nn.Module):
             h = self.decoder.apply_head_norm(h, cond_vec)
         preds = self.head(h)
         preds = preds[:, 1:, :]  # drop start token
-        return F.mse_loss(preds, targets)
+
+        # apply convs after unpatchify for smoother images before computing loss
+        recon = []
+        offset = 0
+        for k in range(self.num_scales):
+            sk = self.scales[k]
+            patch_num = self.patch_block_sizes[k]
+            pred_k = preds[:, offset:offset + patch_num, :]
+            img_k = unpatchify(pred_k, self.p, sk, sk)
+            img_k = self.post_unpatch_convs[k](img_k)
+            recon_k = patchify(img_k, self.p)
+            recon.append(recon_k)
+            offset += patch_num
+        recon = torch.cat(recon, dim=1)
+
+        return F.mse_loss(recon, targets)
 
     @torch.no_grad()
     def generate(
@@ -424,6 +449,7 @@ class XPredNextScale(nn.Module):
 
         # reconstruct scale-1 image
         img_k = unpatchify(pred, self.p, s1, s1)
+        img_k = self.post_unpatch_convs[0](img_k)
 
         # subsequent scales
         offset += n1_block
@@ -455,6 +481,7 @@ class XPredNextScale(nn.Module):
             pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
 
             img_k = unpatchify(pred, self.p, sk, sk)
+            img_k = self.post_unpatch_convs[k](img_k)
 
             offset += self.block_sizes[k]
 
