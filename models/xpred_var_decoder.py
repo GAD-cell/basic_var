@@ -198,14 +198,22 @@ def sinkhorn_loss(
     """
 
     n, m = y.shape[0], x.shape[0]
+    assert y.shape[1] == x.shape[1], "samples must live in same dimension"
     device = y.device
 
     # Uniform marginals
     a = torch.full((n,), 1.0 / n, device=device)
     b = torch.full((m,), 1.0 / m, device=device)
 
-    # Cost matrix C_ij = ||y_i - x_j||^2
-    C = torch.cdist(y, x, p=2) ** 2  # (n, m)
+    if device.type == "mps":
+        # Cost matrix C_ij = ||y_i - x_j||^2 (manual, MPS-friendly)
+        # C = ||y||^2 + ||x||^2 - 2 y x^T
+        y_norm2 = (y * y).sum(dim=1)          # (n,)
+        x_norm2 = (x * x).sum(dim=1)        # (m,)
+        C = y_norm2[:, None] + x_norm2[None, :] - 2.0 * (y @ x.T)             # (n, m)
+        C = C.clamp_min(0.0)  # guard against tiny negative values from roundoff
+    else :
+        C = torch.cdist(y, x, p=2) ** 2  # (n, m)
 
     # Log-domain Sinkhorn variables
     log_a = torch.log(a)
@@ -214,21 +222,15 @@ def sinkhorn_loss(
     u = torch.zeros_like(log_a)
     v = torch.zeros_like(log_b)
 
+    logK = -C / epsilon
+
     # Sinkhorn iterations
     for _ in range(n_iters):
-        u = log_a - torch.logsumexp(
-            (-C + u[:, None] + v[None, :]) / epsilon,
-            dim=1
-        )
-        v = log_b - torch.logsumexp(
-            (-C + u[:, None] + v[None, :]) / epsilon,
-            dim=0
-        )
+        u = log_a - torch.logsumexp(logK + v[None,:], dim=1)
+        v = log_b - torch.logsumexp(logK + u[:,None], dim=0)
 
     # Transport plan π
-    pi = torch.exp(
-        (-C + u[:, None] + v[None, :]) / epsilon
-    )  # (n, m)
+    pi = torch.exp(logK + u[:, None] + v[None, :])  # (n, m)
 
     # Sinkhorn cost
     loss = torch.sum(pi * C)
@@ -239,11 +241,15 @@ def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_siz
     """
     Applies sinkorn loss for first scale block, and MSE for later ones
     """
+    # Prediction and target are (B, L, patch_dim)
     block_1_pred = preds[:, :block_sizes[0], :]
     later_blocks_pred = preds[:, block_sizes[0]:, :]
     block_1_target = targets[:, :block_sizes[0], :]
     later_blocks_target = targets[:, block_sizes[0]: , :]
-    sink_loss = sinkhorn_loss(block_1_pred, block_1_target)
+
+    block1_pred_flat = block_1_pred.reshape(block_1_pred.shape[0], -1)
+    block1_target_flat = block_1_target.reshape(block_1_target.shape[0], -1)
+    sink_loss = sinkhorn_loss(block1_pred_flat, block1_target_flat)
     mse_loss = F.mse_loss(later_blocks_pred, later_blocks_target)
     return mse_loss + lbda*sink_loss
 
