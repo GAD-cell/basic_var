@@ -116,7 +116,7 @@ def evaluate_model(
         cur = min(batch_size, remaining)
 
         # retrieve a batch of real lowest-scale images to condition on
-        idx = torch.randint(0, len(dataset), (n_samples,))
+        idx = torch.randint(0, len(dataset), (cur,))
         img = torch.stack([dataset[i][0] for i in idx], dim=0).to(device)
         low_sc = F.interpolate(img, size=(model.scales[0], model.scales[0]), mode="area")
 
