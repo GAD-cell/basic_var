@@ -188,7 +188,6 @@ class XPredNextScale(nn.Module):
         self.scale_embed = nn.Embedding(self.num_scales, cfg.d_model)
         self.class_embed = nn.Embedding(cfg.num_classes + 1, cfg.d_model)  # last = uncond
 
-        self.start_token = nn.Parameter(torch.zeros(1, 1, cfg.d_model))
         self.noise_proj = nn.Linear(cfg.noise_dim, cfg.d_model) if cfg.use_noise_seed else None
 
         if cfg.decoder_type == "gpt2":
