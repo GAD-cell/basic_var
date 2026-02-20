@@ -435,12 +435,8 @@ if __name__ == "__main__":
         attn_l2_norm=True,
         shared_aln=False,
         cond_drop_prob=0.1,
-        use_noise_seed=True,
-        noise_dim = 4*4*3, # patch dimension
-        noise_scale = 1.0,
-        input_noise_base=0.0,
-        input_noise_decay=0.6,
         num_classes=10,
+        first_scale_noise_std=0.1,
     )
 
     model = XPredNextScale(cfg)

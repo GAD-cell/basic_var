@@ -103,11 +103,7 @@ class XPredConfig:
     shared_aln: bool = False
     num_classes: int = 1000
     cond_drop_prob: float = 0.1
-    use_noise_seed: bool = True
-    noise_dim: int = 256
-    noise_scale: float = 1.0
-    input_noise_base: float = 0.0
-    input_noise_decay: float = 0.7
+    first_scale_noise_std: float = 0.0
 
 
 def pick_device():
@@ -294,21 +290,17 @@ class XPredNextScale(nn.Module):
         imgs_k = [F.adaptive_avg_pool2d(imgs_bchw, (s, s)) for s in self.scales]
         targets = [patchify(im, self.p) for im in imgs_k]  # P_k
 
-        def add_scale_noise(x: torch.Tensor, k: int) -> torch.Tensor:
-            if self.cfg.input_noise_base <= 0:
-                return x
-            sigma = self.cfg.input_noise_base * (self.cfg.input_noise_decay ** k)
-            return x + torch.randn_like(x) * sigma
-
         # build input blocks
         blocks = []
-        # scale 1: condition embedding, optionally add noise + cond
+        # scale 1: class/pos/scale token + noisy lowest-scale image
         n1 = self.block_sizes[0]
         start = self._encode_condition(labels, B, device).unsqueeze(1).expand(-1, n1, -1)
-        if self.cfg.use_noise_seed:
-            noise = torch.randn(B, self.cfg.noise_dim, device=device)
-            start = start + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
-        start = add_scale_noise(start, 0)
+
+        low = imgs_k[0]
+        low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
+        low_patches = patchify(low, self.p)
+        low_block = self.patch_embed(low_patches)
+        start = start + low_block
         blocks.append(start)
 
         # scales 2..K: upsample previous scale to current size, then patchify
@@ -317,7 +309,6 @@ class XPredNextScale(nn.Module):
             up = F.interpolate(prev, size=(self.scales[k], self.scales[k]), mode="bicubic", align_corners=False)
             patches = patchify(up, self.p)
             block = self.patch_embed(patches)
-            block = add_scale_noise(block, k)
             blocks.append(block)
 
         inputs = torch.cat(blocks, dim=1)  # [B, L, d_model]
@@ -396,15 +387,17 @@ class XPredNextScale(nn.Module):
         start_cond = self._encode_condition(labels, B, device).unsqueeze(1).expand(-1, n1, -1)
         start_uncond = self._encode_condition(uncond, B, device).unsqueeze(1).expand(-1, n1, -1)
 
-        # optional noise on start (keep if desired)
-        if self.cfg.use_noise_seed:
-            noise = torch.randn(B, self.cfg.noise_dim, device=device)
-            start_cond = start_cond + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
-            start_uncond = start_uncond + self.noise_proj(noise).unsqueeze(1) * self.cfg.noise_scale
-        if self.cfg.input_noise_base > 0:
-            sigma0 = self.cfg.input_noise_base
-            start_cond = start_cond + torch.randn_like(start_cond) * sigma0
-            start_uncond = start_uncond + torch.randn_like(start_uncond) * sigma0
+
+        # noisy lowest-scale image token (shared between cond/uncond)
+        s1 = self.scales[0]
+        low = torch.zeros(B, 3, s1, s1, device=device)
+        if self.cfg.first_scale_noise_std > 0:
+            low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
+        low_patches = patchify(low, self.p)
+        low_block = self.patch_embed(low_patches)
+
+        start_cond = start_cond + low_block
+        start_uncond = start_uncond + low_block
 
         inp_cond = add_pos(start_cond, offset)
         inp_uncond = add_pos(start_uncond, offset)
@@ -427,7 +420,6 @@ class XPredNextScale(nn.Module):
         pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
 
         # reconstruct scale-1 image
-        s1 = self.scales[0]
         img_k = unpatchify(pred, self.p, s1, s1)
 
         # subsequent scales
@@ -437,9 +429,6 @@ class XPredNextScale(nn.Module):
             up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
             patches = patchify(up, self.p)
             inp = self.patch_embed(patches)
-            if self.cfg.input_noise_base > 0:
-                sigma = self.cfg.input_noise_base * (self.cfg.input_noise_decay ** k)
-                inp = inp + torch.randn_like(inp) * sigma
 
             inp = add_pos(inp, offset)
 
