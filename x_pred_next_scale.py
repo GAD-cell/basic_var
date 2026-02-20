@@ -440,4 +440,4 @@ if __name__ == "__main__":
     )
 
     model = XPredNextScale(cfg)
-    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False, progress_bar=True)
+    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False, progress_bar=False)
