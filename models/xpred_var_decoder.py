@@ -177,18 +177,21 @@ class XPredNextScale(nn.Module):
         self.p = cfg.patch_size
         self.num_scales = len(cfg.scales)
 
-        # tokens per scale
-        self.block_sizes = [(s // self.p) ** 2 for s in self.scales]
+        # tokens per scale (patches only)
+        self.patch_block_sizes = [(s // self.p) ** 2 for s in self.scales]
+        # add a start token to scale-0 block
+        self.block_sizes = [self.patch_block_sizes[0] + 1] + self.patch_block_sizes[1:]
         self.L = sum(self.block_sizes)
+        self.patch_L = sum(self.patch_block_sizes)
         self.patch_dim = self.p * self.p * 3
 
         # embeddings
         self.patch_embed = nn.Linear(self.patch_dim, cfg.d_model)
-        self.pos_1L = self._build_sinusoidal_pos().unsqueeze(0)  # [1, L, d_model]
+        pos_patches = self._build_sinusoidal_pos()  # [patch_L, d_model]
+        start_pos = torch.zeros(1, cfg.d_model)
+        self.pos_1L = torch.cat([start_pos, pos_patches], dim=0).unsqueeze(0)  # [1, L, d_model]
         self.scale_embed = nn.Embedding(self.num_scales, cfg.d_model)
         self.class_embed = nn.Embedding(cfg.num_classes + 1, cfg.d_model)  # last = uncond
-
-        self.noise_proj = nn.Linear(cfg.noise_dim, cfg.d_model) if cfg.use_noise_seed else None
 
         if cfg.decoder_type == "gpt2":
             print("Using GPT-2 decoder.")
@@ -237,7 +240,7 @@ class XPredNextScale(nn.Module):
         Build within-scale 2D sinusoidal positional encoding.
         Each patch position is mapped to original image coordinates (largest scale)
         so that top-left patches differ across scales.
-        Returns [L, d_model].
+        Returns [patch_L, d_model].
         """
         d_model = self.cfg.d_model
         if d_model % 4 != 0:
@@ -280,7 +283,7 @@ class XPredNextScale(nn.Module):
         """
         Returns:
           inputs_embeds: [B, L, d_model]
-          targets: [B, L, patch_dim]
+          targets: [B, patch_L, patch_dim]
         """
         B, _, _, _ = imgs_bchw.shape
         device = imgs_bchw.device
@@ -291,16 +294,15 @@ class XPredNextScale(nn.Module):
 
         # build input blocks
         blocks = []
-        # scale 1: class/pos/scale token + noisy lowest-scale image
-        n1 = self.block_sizes[0]
-        start = self._encode_condition(labels, B, device).unsqueeze(1).expand(-1, n1, -1)
+        # first scale: start token + noisy lowest-scale image
+        start = self._encode_condition(labels, B, device).unsqueeze(1)
 
         low = imgs_k[0]
         low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
         low_patches = patchify(low, self.p)
         low_block = self.patch_embed(low_patches)
-        start = start + low_block
-        blocks.append(start)
+        block0 = torch.cat([start, low_block], dim=1)
+        blocks.append(block0)
 
         # scales 2..K: upsample previous scale to current size, then patchify
         for k in range(1, self.num_scales):
@@ -347,6 +349,7 @@ class XPredNextScale(nn.Module):
             h = self.decoder(inputs, cond_vec, attn_mask)
             h = self.decoder.apply_head_norm(h, cond_vec)
         preds = self.head(h)
+        preds = preds[:, 1:, :]  # drop start token
         return F.mse_loss(preds, targets)
 
     @torch.no_grad()
@@ -380,11 +383,11 @@ class XPredNextScale(nn.Module):
 
         # first step: predict scale 1
         offset = 0
-        n1 = self.block_sizes[0]
+        n1_block = self.block_sizes[0]
 
         # class conditioning only for first block
-        start_cond = self._encode_condition(labels, B, device).unsqueeze(1).expand(-1, n1, -1)
-        start_uncond = self._encode_condition(uncond, B, device).unsqueeze(1).expand(-1, n1, -1)
+        start_cond = self._encode_condition(labels, B, device).unsqueeze(1)
+        start_uncond = self._encode_condition(uncond, B, device).unsqueeze(1)
 
 
         # noisy lowest-scale image token (shared between cond/uncond)
@@ -395,11 +398,11 @@ class XPredNextScale(nn.Module):
         low_patches = patchify(low, self.p)
         low_block = self.patch_embed(low_patches)
 
-        start_cond = start_cond + low_block
-        start_uncond = start_uncond + low_block
+        block_cond = torch.cat([start_cond, low_block], dim=1)
+        block_uncond = torch.cat([start_uncond, low_block], dim=1)
 
-        inp_cond = add_pos(start_cond, offset)
-        inp_uncond = add_pos(start_uncond, offset)
+        inp_cond = add_pos(block_cond, offset)
+        inp_uncond = add_pos(block_uncond, offset)
 
         if self.cfg.decoder_type == "gpt2":
             past = None
@@ -417,12 +420,13 @@ class XPredNextScale(nn.Module):
             h_uncond = self.decoder.apply_head_norm(h_uncond, uncond_vec)
 
         pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
+        pred = pred[:, 1:, :]
 
         # reconstruct scale-1 image
         img_k = unpatchify(pred, self.p, s1, s1)
 
         # subsequent scales
-        offset += n1
+        offset += n1_block
         for k in range(1, self.num_scales):
             sk = self.scales[k]
             up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
@@ -433,8 +437,8 @@ class XPredNextScale(nn.Module):
 
             if self.cfg.decoder_type == "gpt2":
                 # adding class embedding at each scale to match CFG design
-                inp_cond = inp_cond + self.class_embed(labels).unsqueeze(1)
-                inp_uncond = inp_uncond + self.class_embed(uncond).unsqueeze(1)
+                inp_cond = inp + self.class_embed(labels).unsqueeze(1)
+                inp_uncond = inp + self.class_embed(uncond).unsqueeze(1)
                 out_cond = self.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
                 out_uncond = self.decoder(inputs_embeds=inp_uncond, use_cache=True, past_key_values=past)
                 h_cond = out_cond.last_hidden_state

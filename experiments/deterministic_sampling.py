@@ -32,8 +32,6 @@ def generate_from_dataset_lowest_scale(
     train_ds,
     B: int,
     cfg_scale: float = 0.7,
-    use_noise_seed: bool = False,
-    noise_scale: float = 1.0,
     device: Optional[torch.device] = None,
 ):
     """
@@ -67,14 +65,6 @@ def generate_from_dataset_lowest_scale(
     s1 = model.scales[0]
     img_k = F.interpolate(imgs, size=(s1, s1), mode="area")
 
-    # Start token (no noise)
-    n1 = model.block_sizes[0]
-    start = model.start_token.expand(B, n1, -1)
-    if use_noise_seed:
-        noise_dim = model.noise_proj.in_features
-        noise = torch.randn(B, noise_dim, device=device)
-        start = start + model.noise_proj(noise).unsqueeze(1) * noise_scale
-
     # Prep conditioning
     uncond = torch.full((B,), model.cfg.num_classes, device=device, dtype=torch.long)
     pos = model.pos_1L.to(device=device)
@@ -84,15 +74,24 @@ def generate_from_dataset_lowest_scale(
     scale_ids = torch.tensor(scale_ids, device=device)
     scale = model.scale_embed(scale_ids).unsqueeze(0)
 
-    def add_cond(x, y):
-        return x + pos[:, : x.shape[1]] + scale[:, : x.shape[1]] + model.class_embed(y).unsqueeze(1)
+    def add_pos(x, offset):
+        return x + pos[:, offset:offset + x.shape[1]] + scale[:, offset:offset + x.shape[1]]
 
     # First step: run start token to initialize cache for GPT2 (prediction ignored)
     if model.cfg.decoder_type == "var":
         model.decoder.enable_kv_cache(True)
 
-    inp_cond = add_cond(start, labels)
-    inp_uncond = add_cond(start, uncond)
+    offset = 0
+    start_cond = model._encode_condition(labels, B, device).unsqueeze(1)
+    start_uncond = model._encode_condition(uncond, B, device).unsqueeze(1)
+
+    low_patches = patchify(img_k, model.p)
+    low_block = model.patch_embed(low_patches)
+    block_cond = torch.cat([start_cond, low_block], dim=1)
+    block_uncond = torch.cat([start_uncond, low_block], dim=1)
+
+    inp_cond = add_pos(block_cond, offset)
+    inp_uncond = add_pos(block_uncond, offset)
 
     if model.cfg.decoder_type == "gpt2":
         past = None
@@ -113,13 +112,16 @@ def generate_from_dataset_lowest_scale(
     _ = (1 + cfg_scale) * model.head(h_cond) - cfg_scale * model.head(h_uncond)
 
     # Subsequent scales conditioned on sampled lowest-scale image
+    offset += model.block_sizes[0]
     for k in range(1, model.num_scales):
         sk = model.scales[k]
         up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
         patches = patchify(up, model.p)
         inp = model.patch_embed(patches)
-        inp_cond = add_cond(inp, labels)
-        inp_uncond = add_cond(inp, uncond)
+        inp = add_pos(inp, offset)
+        if model.cfg.decoder_type == "gpt2":
+            inp_cond = inp + model.class_embed(labels).unsqueeze(1)
+            inp_uncond = inp + model.class_embed(uncond).unsqueeze(1)
 
         if model.cfg.decoder_type == "gpt2":
             out_cond = model.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
@@ -130,13 +132,14 @@ def generate_from_dataset_lowest_scale(
         else:
             cond_vec = model._encode_condition(labels, B, device)
             uncond_vec = model._encode_condition(uncond, B, device)
-            h_cond = model.decoder(inp_cond, cond_vec, attn_bias=None)
-            h_uncond = model.decoder(inp_uncond, uncond_vec, attn_bias=None)
+            h_cond = model.decoder(inp, cond_vec, attn_bias=None)
+            h_uncond = model.decoder(inp, uncond_vec, attn_bias=None)
             h_cond = model.decoder.apply_head_norm(h_cond, cond_vec)
             h_uncond = model.decoder.apply_head_norm(h_uncond, uncond_vec)
 
         pred = (1 + cfg_scale) * model.head(h_cond) - cfg_scale * model.head(h_uncond)
         img_k = unpatchify(pred, model.p, sk, sk)
+        offset += model.block_sizes[k]
 
     if model.cfg.decoder_type == "var":
         model.decoder.enable_kv_cache(False)
