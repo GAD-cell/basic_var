@@ -231,6 +231,7 @@ class XPredNextScale(nn.Module):
 
         self.head = nn.Linear(cfg.d_model, self.patch_dim)
 
+        self.apply_conv: bool = False
         # Add conv modules after "unpatchify" for smoother images
         self.post_unpatch_convs = nn.ModuleList()
         for k in range(self.num_scales):
@@ -361,26 +362,29 @@ class XPredNextScale(nn.Module):
         preds = self.head(h)
         preds = preds[:, 1:, :]  # drop start token
 
-        # apply convs after unpatchify for smoother images before computing loss
-        recon = []
-        offset = 0
-        for k in range(self.num_scales):
-            sk = self.scales[k]
-            patch_num = self.patch_block_sizes[k]
-            pred_k = preds[:, offset:offset + patch_num, :]
-            img_k = unpatchify(pred_k, self.p, sk, sk)
-            img_k = self.post_unpatch_convs[k](img_k)
-            recon_k = patchify(img_k, self.p)
-            recon.append(recon_k)
-            offset += patch_num
-        recon = torch.cat(recon, dim=1)
-
-        return F.mse_loss(recon, targets)
+        if self.apply_conv:
+            # apply convs after unpatchify for smoother images before computing loss
+            recon = []
+            offset = 0
+            for k in range(self.num_scales):
+                sk = self.scales[k]
+                patch_num = self.patch_block_sizes[k]
+                pred_k = preds[:, offset:offset + patch_num, :]
+                img_k = unpatchify(pred_k, self.p, sk, sk)
+                img_k = self.post_unpatch_convs[k](img_k)
+                recon_k = patchify(img_k, self.p)
+                recon.append(recon_k)
+                offset += patch_num
+            recon = torch.cat(recon, dim=1)
+            return F.mse_loss(recon, targets)
+        
+        return F.mse_loss(preds, targets)
 
     @torch.no_grad()
     def generate(
         self,
         B: int,
+        low_sc: torch.Tensor,  # [B, 3, s1, s1], clean lowest-scale image
         labels: Optional[torch.Tensor] = None,
         cfg_scale: float = 0.7,
     ) -> torch.Tensor:
@@ -417,7 +421,8 @@ class XPredNextScale(nn.Module):
 
         # noisy lowest-scale image token (shared between cond/uncond)
         s1 = self.scales[0]
-        low = torch.zeros(B, 3, s1, s1, device=device)
+        #low = torch.zeros(B, 3, s1, s1, device=device)
+        low = low_sc.to(device=device)
         if self.cfg.first_scale_noise_std > 0:
             low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
         low_patches = patchify(low, self.p)
@@ -449,7 +454,8 @@ class XPredNextScale(nn.Module):
 
         # reconstruct scale-1 image
         img_k = unpatchify(pred, self.p, s1, s1)
-        img_k = self.post_unpatch_convs[0](img_k)
+        if self.apply_conv:
+            img_k = self.post_unpatch_convs[0](img_k)
 
         # subsequent scales
         offset += n1_block
@@ -481,7 +487,8 @@ class XPredNextScale(nn.Module):
             pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
 
             img_k = unpatchify(pred, self.p, sk, sk)
-            img_k = self.post_unpatch_convs[k](img_k)
+            if self.apply_conv:
+                img_k = self.post_unpatch_convs[k](img_k)
 
             offset += self.block_sizes[k]
 

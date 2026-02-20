@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid, save_image
@@ -96,6 +97,7 @@ def train_one_batch(model: nn.Module, batch, optimizer, scaler, grad_accum: int)
 
 @torch.no_grad()
 def evaluate_model(
+    dataset: datasets.ImageFolder,
     model: XPredNextScale,
     n_samples: int,
     batch_size: int,
@@ -112,7 +114,13 @@ def evaluate_model(
     print(f"Generating {n_samples} samples for evaluation...")
     while remaining > 0:
         cur = min(batch_size, remaining)
-        imgs = model.generate(B=cur).clamp(0, 1)
+
+        # retrieve a batch of real lowest-scale images to condition on
+        idx = torch.randint(0, len(dataset), (n_samples,))
+        img = torch.stack([dataset[i][0] for i in idx], dim=0).to(device)
+        low_sc = F.interpolate(img, size=(model.scales[0], model.scales[0]), mode="area")
+
+        imgs = model.generate(B=cur, low_sc=low_sc).clamp(0, 1)
         feats = extract_dinov2_features(dinov2, imgs)
         fake_feats.append(feats.cpu())
         remaining -= cur
@@ -177,7 +185,13 @@ def _nearest_neighbors_mosaic(
     n_samples: int = 3,
 ):
     model.eval()
-    gen = model.generate(B=n_samples).clamp(0, 1)
+
+    # retrieve a batch of real lowest-scale images to condition on
+    idx = torch.randint(0, len(train_ds), (n_samples,))
+    img = torch.stack([train_ds[i][0] for i in idx], dim=0).to(device)
+    low_sc = F.interpolate(img, size=(model.scales[0], model.scales[0]), mode="area")
+
+    gen = model.generate(B=n_samples, low_sc=low_sc).clamp(0, 1)
     dinov2 = get_dinov2_model(device)
     gen_feats = extract_dinov2_features(dinov2, gen)
 
@@ -297,6 +311,7 @@ def _train_loop(
         if (ep + 1) % train_cfg.eval_every_n_epochs == 0:
             model.eval()
             metrics = evaluate_model(
+                daataset=train_ds,
                 model=model,
                 n_samples=train_cfg.n_eval_samples,
                 batch_size=min(train_cfg.batch_size, train_cfg.n_eval_samples),
