@@ -452,7 +452,7 @@ if __name__ == "__main__":
         cond_drop_prob=0.1,
         num_classes=10,
         first_scale_noise_std=0.0,
-        loss="mse_wo_s1" # "mse" or "sink" or "mse_wo_s1"
+        loss="mse" # "mse" or "sink" or "mse_wo_s1"
     )
 
     model = XPredNextScale(cfg)
