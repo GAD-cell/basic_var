@@ -155,7 +155,7 @@ def pick_device():
         return torch.device("cpu")
 
 def generate_from_cifar10_lowest_scale_and_save():
-    ckpt_file : str = "checkpoints/step_40000_stf_fs_noise.pt"
+    ckpt_file : str = "checkpoints/best_deterministic_mse.pt"
     B = 4
     cfg_scale = 0.7
 

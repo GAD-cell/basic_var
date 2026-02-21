@@ -118,9 +118,10 @@ def evaluate_model(
         # retrieve a batch of real lowest-scale images to condition on
         idx = torch.randint(0, len(dataset), (cur,))
         img = torch.stack([dataset[i][0] for i in idx], dim=0).to(device)
+        labels = torch.tensor([dataset[i][1] for i in idx], device=device, dtype=torch.long)
         low_sc = F.interpolate(img, size=(model.scales[0], model.scales[0]), mode="area")
 
-        imgs = model.generate(B=cur, low_sc=low_sc).clamp(0, 1)
+        imgs = model.generate(B=cur, low_sc=low_sc, labels=labels).clamp(0, 1)
         feats = extract_dinov2_features(dinov2, imgs)
         fake_feats.append(feats.cpu())
         remaining -= cur
