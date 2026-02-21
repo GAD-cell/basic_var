@@ -446,13 +446,13 @@ if __name__ == "__main__":
         n_head=4,
         decoder_type="var",
         mlp_ratio=2.0,
-        drop_path_rate=0.05,
+        drop_path_rate=0.0,
         attn_l2_norm=True,
         shared_aln=False,
         cond_drop_prob=0.1,
         num_classes=10,
-        first_scale_noise_std=0.1,
-        loss="mse" # "mse" or "sink" or "mse_wo_s1"
+        first_scale_noise_std=0.0,
+        loss="mse_wo_s1" # "mse" or "sink" or "mse_wo_s1"
     )
 
     model = XPredNextScale(cfg)

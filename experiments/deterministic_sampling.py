@@ -155,7 +155,7 @@ def pick_device():
         return torch.device("cpu")
 
 def generate_from_cifar10_lowest_scale_and_save():
-    ckpt_file : str = "checkpoints/step_120000.pt"
+    ckpt_file : str = "checkpoints/step_760000_noise_dataset.pt"
     B = 4
     cfg_scale = 0.7
 
@@ -169,7 +169,7 @@ def generate_from_cifar10_lowest_scale_and_save():
     model.eval()
 
     with torch.no_grad():
-        o_imgs, gen_imgs = generate_from_dataset_lowest_scale(model, dataset, B, cfg_scale=cfg_scale, device=device, use_noise_seed=True)
+        o_imgs, gen_imgs = generate_from_dataset_lowest_scale(model, dataset, B, cfg_scale=cfg_scale, device=device)
     
     print("Saving generated images to deterministic_sampling.png ...")
     # Save mosaic of original and generated images
@@ -177,7 +177,9 @@ def generate_from_cifar10_lowest_scale_and_save():
     gen_imgs = gen_imgs.cpu().permute(0, 2, 3, 1).numpy()
     mosaic = np.concatenate([np.concatenate([o, g], axis=1) for o, g in zip(o_imgs, gen_imgs)], axis=0)
     mosaic = np.clip(mosaic, 0.0, 1.0)
-    plt.imsave("experiments/deterministic_sampling.png", mosaic)
+
+    ckpt_filename = Path(ckpt_file).name
+    plt.imsave(f"experiments/deterministic_sampling_{ckpt_filename}.png", mosaic)
 
 if __name__ == "__main__":
     generate_from_cifar10_lowest_scale_and_save()
