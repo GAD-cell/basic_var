@@ -179,7 +179,7 @@ def generate_from_cifar10_lowest_scale_and_save():
     mosaic = np.clip(mosaic, 0.0, 1.0)
 
     ckpt_filename = Path(ckpt_file).name
-    plt.imsave(f"experiments/deterministic_sampling_{ckpt_filename}.png", mosaic)
+    plt.imsave(f"experiments/output/deterministic_sampling_{ckpt_filename}.png", mosaic)
 
 if __name__ == "__main__":
     generate_from_cifar10_lowest_scale_and_save()
