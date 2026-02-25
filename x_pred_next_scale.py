@@ -190,9 +190,10 @@ def _nearest_neighbors_mosaic(
     # retrieve a batch of real lowest-scale images to condition on
     idx = torch.randint(0, len(train_ds), (n_samples,))
     img = torch.stack([train_ds[i][0] for i in idx], dim=0).to(device)
+    labels = torch.tensor([train_ds[i][1] for i in idx], device=device, dtype=torch.long)
     low_sc = F.interpolate(img, size=(model.scales[0], model.scales[0]), mode="area")
 
-    gen = model.generate(B=n_samples, low_sc=low_sc).clamp(0, 1)
+    gen = model.generate(B=n_samples, low_sc=low_sc, labels=labels).clamp(0, 1)
     dinov2 = get_dinov2_model(device)
     gen_feats = extract_dinov2_features(dinov2, gen)
 
@@ -435,12 +436,12 @@ if __name__ == "__main__":
         real_features_path="data/cifar10_train_dinov2_features.pt", 
         real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
         device=device.type, 
-        use_wandb=True,
+        use_wandb=False,
         wandb_run_name="cifar10-var-L4-H4-d128-e1000",
         ckpt_every_n_steps=40_000,
     )
     cfg = XPredConfig(
-        scales=(4, 8, 16, 32),
+        scales=(8, 16, 32),
         patch_size=4,
         d_model=128,
         n_layer=4,
@@ -457,4 +458,4 @@ if __name__ == "__main__":
     )
 
     model = XPredNextScale(cfg)
-    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False, progress_bar=False)
+    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False, progress_bar=True)
