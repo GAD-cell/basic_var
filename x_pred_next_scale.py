@@ -453,6 +453,7 @@ if __name__ == "__main__":
         shared_aln=False,
         cond_drop_prob=0.1,
         num_classes=10,
+        cfg_scale=0.7,
         first_scale_noise_std=0.0,
         loss="mse" # "mse" or "sink" or "mse_wo_s1"
     )

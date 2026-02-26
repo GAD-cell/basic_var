@@ -97,13 +97,14 @@ class XPredConfig:
     n_layer: int = 12
     n_head: int = 12
     dropout: float = 0.0
-    decoder_type: str = "gpt2"       # "gpt2" or "var"
+    decoder_type: str = "var"       # "gpt2" or "var"
     mlp_ratio: float = 4.0
     drop_path_rate: float = 0.0
-    attn_l2_norm: bool = False
+    attn_l2_norm: bool = True
     shared_aln: bool = False
     num_classes: int = 1000
     cond_drop_prob: float = 0.1
+    cfg_scale: float = 0.7
     first_scale_noise_std: float = 0.0
     loss: str = "mse" # "mse" or "sink" or "mse_wo_s1"
     sink_lbda: float = 1.0
@@ -490,7 +491,6 @@ class XPredNextScale(nn.Module):
         B: int,
         low_sc: torch.Tensor,  # [B, 3, s1, s1], clean lowest-scale image
         labels: Optional[torch.Tensor] = None,
-        cfg_scale: float = 0.7,
     ) -> torch.Tensor:
         """
         Returns generated image at the largest scale, shape [B, 3, sK, sK].
@@ -553,7 +553,7 @@ class XPredNextScale(nn.Module):
             h_cond = self.decoder.apply_head_norm(h_cond, cond_vec)
             h_uncond = self.decoder.apply_head_norm(h_uncond, uncond_vec)
 
-        pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
+        pred = (1 + self.cfg.cfg_scale) * self.head(h_cond) - self.cfg.cfg_scale * self.head(h_uncond)
         pred = pred[:, 1:, :]
 
         # reconstruct scale-1 image
@@ -588,7 +588,7 @@ class XPredNextScale(nn.Module):
                 h_uncond = self.decoder(inp, uncond_vec, attn_bias=None)
                 h_cond = self.decoder.apply_head_norm(h_cond, cond_vec)
                 h_uncond = self.decoder.apply_head_norm(h_uncond, uncond_vec)
-            pred = (1 + cfg_scale) * self.head(h_cond) - cfg_scale * self.head(h_uncond)
+            pred = (1 + self.cfg.cfg_scale) * self.head(h_cond) - self.cfg.cfg_scale * self.head(h_uncond)
 
             img_k = unpatchify(pred, self.p, sk, sk)
             if self.apply_conv:
