@@ -544,11 +544,11 @@ class XPredNextScale(nn.Module):
 
         if self.cfg.decoder_type == "gpt2":
             past = None
-            out_cond = self.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
-            out_uncond = self.decoder(inputs_embeds=inp_uncond, use_cache=True, past_key_values=past)
-            h_cond = out_cond.last_hidden_state
-            h_uncond = out_uncond.last_hidden_state
-            past = out_cond.past_key_values
+            inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+            out = self.decoder(inputs_embeds=inp_b, use_cache=True, past_key_values=past)
+            h = out.last_hidden_state
+            h_cond, h_uncond = h[:B], h[B:]
+            past = out.past_key_values
         else:
             cond_vec = self._encode_condition(labels, B, device)
             uncond_vec = self._encode_condition(uncond, B, device)
@@ -581,11 +581,11 @@ class XPredNextScale(nn.Module):
                 # adding class embedding at each scale to match CFG design
                 inp_cond = inp + self.class_embed(labels).unsqueeze(1)
                 inp_uncond = inp + self.class_embed(uncond).unsqueeze(1)
-                out_cond = self.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
-                out_uncond = self.decoder(inputs_embeds=inp_uncond, use_cache=True, past_key_values=past)
-                h_cond = out_cond.last_hidden_state
-                h_uncond = out_uncond.last_hidden_state
-                past = out_cond.past_key_values
+                inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+                out = self.decoder(inputs_embeds=inp_b, use_cache=True, past_key_values=past)
+                h = out.last_hidden_state
+                h_cond, h_uncond = h[:B], h[B:]
+                past = out.past_key_values
             else:
                 cond_vec = self._encode_condition(labels, B, device)
                 uncond_vec = self._encode_condition(uncond, B, device)
