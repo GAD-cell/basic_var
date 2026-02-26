@@ -436,7 +436,7 @@ if __name__ == "__main__":
         real_features_path="data/cifar10_train_dinov2_features.pt", 
         real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
         device=device.type, 
-        use_wandb=True,
+        use_wandb=False,
         wandb_run_name="cifar10-var-L4-H4-d128-e1000",
         ckpt_every_n_steps=40_000,
     )
@@ -445,7 +445,7 @@ if __name__ == "__main__":
         patch_size=4,
         d_model=256,
         n_layer=6,
-        n_head=6,
+        n_head=8,
         decoder_type="var",
         mlp_ratio=2.0,
         drop_path_rate=0.0,
@@ -459,4 +459,4 @@ if __name__ == "__main__":
     )
 
     model = XPredNextScale(cfg)
-    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False, progress_bar=False)
+    train_cifar10(model, train_cfg, data_root="data", feature_split="train", feature_batch_size=128, force_recompute_features=False, progress_bar=True)

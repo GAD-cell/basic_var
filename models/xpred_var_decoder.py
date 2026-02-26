@@ -183,7 +183,7 @@ def sinkhorn_loss(
     Parameters
     ----------
     y : Tensor (n, d)
-        Source samples (given by model(z) where z \sim \mathcal{N}(0,1))
+        Source samples (given by model(z) where z sim mathcal{N}(0,1))
     x : Tensor (m, d)
         Target samples
     model : nn.Module
