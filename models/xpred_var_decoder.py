@@ -518,6 +518,10 @@ class XPredNextScale(nn.Module):
         offset = 0
         n1_block = self.block_sizes[0]
 
+        if self.cfg.decoder_type == "var":
+            # Keep prefix context via KV cache across scale blocks
+            self.decoder.enable_kv_cache(True)
+
         # class conditioning only for first block
         start_cond = self._encode_condition(labels, B, device).unsqueeze(1)
         start_uncond = self._encode_condition(uncond, B, device).unsqueeze(1)
@@ -548,10 +552,12 @@ class XPredNextScale(nn.Module):
         else:
             cond_vec = self._encode_condition(labels, B, device)
             uncond_vec = self._encode_condition(uncond, B, device)
-            h_cond = self.decoder(inp_cond, cond_vec, attn_bias=None)
-            h_uncond = self.decoder(inp_uncond, uncond_vec, attn_bias=None)
-            h_cond = self.decoder.apply_head_norm(h_cond, cond_vec)
-            h_uncond = self.decoder.apply_head_norm(h_uncond, uncond_vec)
+            # batch-double: single forward for cond/uncond to keep KV cache aligned
+            inp = torch.cat([inp_cond, inp_uncond], dim=0)
+            cond = torch.cat([cond_vec, uncond_vec], dim=0)
+            h = self.decoder(inp, cond, attn_bias=None)
+            h = self.decoder.apply_head_norm(h, cond)
+            h_cond, h_uncond = h[:B], h[B:]
 
         pred = (1 + self.cfg.cfg_scale) * self.head(h_cond) - self.cfg.cfg_scale * self.head(h_uncond)
         pred = pred[:, 1:, :]
@@ -583,11 +589,12 @@ class XPredNextScale(nn.Module):
             else:
                 cond_vec = self._encode_condition(labels, B, device)
                 uncond_vec = self._encode_condition(uncond, B, device)
-                # no explicit class embedding in the input (following original VAR implementation)
-                h_cond = self.decoder(inp, cond_vec, attn_bias=None)
-                h_uncond = self.decoder(inp, uncond_vec, attn_bias=None)
-                h_cond = self.decoder.apply_head_norm(h_cond, cond_vec)
-                h_uncond = self.decoder.apply_head_norm(h_uncond, uncond_vec)
+                # batch-double: single forward for cond/uncond to keep KV cache aligned
+                inp_b = torch.cat([inp, inp], dim=0)
+                cond_b = torch.cat([cond_vec, uncond_vec], dim=0)
+                h = self.decoder(inp_b, cond_b, attn_bias=None)
+                h = self.decoder.apply_head_norm(h, cond_b)
+                h_cond, h_uncond = h[:B], h[B:]
             pred = (1 + self.cfg.cfg_scale) * self.head(h_cond) - self.cfg.cfg_scale * self.head(h_uncond)
 
             img_k = unpatchify(pred, self.p, sk, sk)

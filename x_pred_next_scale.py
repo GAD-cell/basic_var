@@ -443,9 +443,9 @@ if __name__ == "__main__":
     cfg = XPredConfig(
         scales=(8, 16, 32),
         patch_size=4,
-        d_model=128,
-        n_layer=4,
-        n_head=4,
+        d_model=256,
+        n_layer=6,
+        n_head=6,
         decoder_type="var",
         mlp_ratio=2.0,
         drop_path_rate=0.0,
