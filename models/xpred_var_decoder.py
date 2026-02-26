@@ -106,6 +106,7 @@ class XPredConfig:
     cond_drop_prob: float = 0.1
     cfg_scale: float = 0.7
     first_scale_noise_std: float = 0.0
+    fs_full_noise: bool = False
     loss: str = "mse" # "mse" or "sink" or "mse_wo_s1"
     sink_lbda: float = 1.0
 
@@ -349,6 +350,18 @@ class XPredNextScale(nn.Module):
             return loss_mse_s2sK(preds, targets, self.patch_block_sizes)
         else:
             raise ValueError("loss must be either mse or sink or mse_wo_s1")
+        
+    def _build_first_scale(self, low_sc: torch.Tensor) -> torch.Tensor:
+        """
+        low_sc: [B, 3, s1, s1]
+        returns: [B, 3, s1, s1]
+        """
+        low = low_sc
+        if self.cfg.fs_full_noise:
+            return torch.randn_like(low)
+        if self.cfg.first_scale_noise_std > 0:
+            low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
+        return low
 
     def _build_sinusoidal_pos(self) -> torch.Tensor:
         """
@@ -413,7 +426,7 @@ class XPredNextScale(nn.Module):
         start = self._encode_condition(labels, B, device).unsqueeze(1)
 
         low = imgs_k[0]
-        low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
+        low = self._build_first_scale(low)
         low_patches = patchify(low, self.p)
         low_block = self.patch_embed(low_patches)
         block0 = torch.cat([start, low_block], dim=1)
@@ -531,8 +544,7 @@ class XPredNextScale(nn.Module):
         s1 = self.scales[0]
         #low = torch.zeros(B, 3, s1, s1, device=device)
         low = low_sc.to(device=device)
-        if self.cfg.first_scale_noise_std > 0:
-            low = low + torch.randn_like(low) * self.cfg.first_scale_noise_std
+        low = self._build_first_scale(low)
         low_patches = patchify(low, self.p)
         low_block = self.patch_embed(low_patches)
 

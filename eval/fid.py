@@ -1,18 +1,28 @@
 import torch
 from typing import Tuple, Optional
 
-def _sqrtm_psd(mat: torch.Tensor) -> torch.Tensor:
+def _sqrtm_psd_sym(mat: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    # Force symmetry (removes numerical asymmetry)
+    mat = (mat + mat.transpose(-1, -2)) * 0.5
+    # Jitter for stability
+    mat = mat + eps * torch.eye(mat.shape[-1], device=mat.device, dtype=mat.dtype)
+
     eigvals, eigvecs = torch.linalg.eigh(mat)
     eigvals = torch.clamp(eigvals, min=0)
-    return (eigvecs * eigvals.sqrt().unsqueeze(0)) @ eigvecs.T
+    return (eigvecs * eigvals.sqrt().unsqueeze(0)) @ eigvecs.transpose(-1, -2)
 
 
 def fid_from_features(real: torch.Tensor, fake: torch.Tensor) -> float:
     mu_r, mu_f = real.mean(0), fake.mean(0)
     cov_r = torch.cov(real.T)
     cov_f = torch.cov(fake.T)
-    cov_sqrt = _sqrtm_psd(cov_r @ cov_f)
-    fid = (mu_r - mu_f).pow(2).sum() + torch.trace(cov_r + cov_f - 2 * cov_sqrt)
+
+    sqrt_cov_r = _sqrtm_psd_sym(cov_r)
+    a = sqrt_cov_r @ cov_f @ sqrt_cov_r
+    covmean = _sqrtm_psd_sym(a)
+
+    fid = (mu_r - mu_f).pow(2).sum() + torch.trace(cov_r + cov_f - 2.0 * covmean)
+
     return float(fid)
 
 def precision_recall_knn(real: torch.Tensor, fake: torch.Tensor, k: int = 5) -> Tuple[float, float]:

@@ -451,10 +451,11 @@ if __name__ == "__main__":
         drop_path_rate=0.0,
         attn_l2_norm=True,
         shared_aln=False,
-        cond_drop_prob=0.1,
+        cond_drop_prob=0.0,
         num_classes=10,
-        cfg_scale=0.7,
+        cfg_scale=0.0,
         first_scale_noise_std=0.0,
+        fs_full_noise=True,
         loss="mse" # "mse" or "sink" or "mse_wo_s1"
     )
 
