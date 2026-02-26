@@ -28,10 +28,9 @@ from models.xpred_var_decoder import XPredConfig, XPredNextScale, patchify, unpa
 
 @torch.no_grad()
 def generate_from_dataset_lowest_scale(
-    model,
+    model: XPredNextScale,
     train_ds,
     B: int,
-    cfg_scale: float = 0.7,
     device: Optional[torch.device] = None,
 ):
     """
@@ -41,7 +40,6 @@ def generate_from_dataset_lowest_scale(
       model: XPredNextScale
       train_ds: dataset returning (img, label)
       B: number of images to generate
-      cfg_scale: classifier-free guidance scale
       device: optional torch.device
 
     Returns:
@@ -95,21 +93,22 @@ def generate_from_dataset_lowest_scale(
 
     if model.cfg.decoder_type == "gpt2":
         past = None
-        out_cond = model.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
-        out_uncond = model.decoder(inputs_embeds=inp_uncond, use_cache=True, past_key_values=past)
-        h_cond = out_cond.last_hidden_state
-        h_uncond = out_uncond.last_hidden_state
-        past = out_cond.past_key_values
+        inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+        out = model.decoder(inputs_embeds=inp_b, use_cache=True, past_key_values=past)
+        h = out.last_hidden_state
+        h_cond, h_uncond = h[:B], h[B:]
+        past = out.past_key_values
     else:
         cond_vec = model._encode_condition(labels, B, device)
         uncond_vec = model._encode_condition(uncond, B, device)
-        h_cond = model.decoder(inp_cond, cond_vec, attn_bias=None)
-        h_uncond = model.decoder(inp_uncond, uncond_vec, attn_bias=None)
-        h_cond = model.decoder.apply_head_norm(h_cond, cond_vec)
-        h_uncond = model.decoder.apply_head_norm(h_uncond, uncond_vec)
+        inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+        cond_b = torch.cat([cond_vec, uncond_vec], dim=0)
+        h = model.decoder(inp_b, cond_b, attn_bias=None)
+        h = model.decoder.apply_head_norm(h, cond_b)
+        h_cond, h_uncond = h[:B], h[B:]
         past = None
 
-    _ = (1 + cfg_scale) * model.head(h_cond) - cfg_scale * model.head(h_uncond)
+    _ = (1 + model.cfg.cfg_scale) * model.head(h_cond) - model.cfg.cfg_scale * model.head(h_uncond)
 
     # Subsequent scales conditioned on sampled lowest-scale image
     offset += model.block_sizes[0]
@@ -122,22 +121,21 @@ def generate_from_dataset_lowest_scale(
         if model.cfg.decoder_type == "gpt2":
             inp_cond = inp + model.class_embed(labels).unsqueeze(1)
             inp_uncond = inp + model.class_embed(uncond).unsqueeze(1)
-
-        if model.cfg.decoder_type == "gpt2":
-            out_cond = model.decoder(inputs_embeds=inp_cond, use_cache=True, past_key_values=past)
-            out_uncond = model.decoder(inputs_embeds=inp_uncond, use_cache=True, past_key_values=past)
-            h_cond = out_cond.last_hidden_state
-            h_uncond = out_uncond.last_hidden_state
-            past = out_cond.past_key_values
+            inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+            out = model.decoder(inputs_embeds=inp_b, use_cache=True, past_key_values=past)
+            h = out.last_hidden_state
+            h_cond, h_uncond = h[:B], h[B:]
+            past = out.past_key_values
         else:
             cond_vec = model._encode_condition(labels, B, device)
             uncond_vec = model._encode_condition(uncond, B, device)
-            h_cond = model.decoder(inp, cond_vec, attn_bias=None)
-            h_uncond = model.decoder(inp, uncond_vec, attn_bias=None)
-            h_cond = model.decoder.apply_head_norm(h_cond, cond_vec)
-            h_uncond = model.decoder.apply_head_norm(h_uncond, uncond_vec)
+            inp_b = torch.cat([inp, inp], dim=0)
+            cond_b = torch.cat([cond_vec, uncond_vec], dim=0)
+            h = model.decoder(inp_b, cond_b, attn_bias=None)
+            h = model.decoder.apply_head_norm(h, cond_b)
+            h_cond, h_uncond = h[:B], h[B:]
 
-        pred = (1 + cfg_scale) * model.head(h_cond) - cfg_scale * model.head(h_uncond)
+        pred = (1 + model.cfg.cfg_scale) * model.head(h_cond) - model.cfg.cfg_scale * model.head(h_uncond)
         img_k = unpatchify(pred, model.p, sk, sk)
         offset += model.block_sizes[k]
 
@@ -157,7 +155,6 @@ def pick_device():
 def generate_from_cifar10_lowest_scale_and_save():
     ckpt_file : str = "checkpoints/step_760000-deterministic_mse.pt"
     B = 4
-    cfg_scale = 0.7
 
     device = pick_device()
     dataset = datasets.CIFAR10(root="data", train=True, download=True, transform=transforms.ToTensor())
@@ -169,7 +166,7 @@ def generate_from_cifar10_lowest_scale_and_save():
     model.eval()
 
     with torch.no_grad():
-        o_imgs, gen_imgs = generate_from_dataset_lowest_scale(model, dataset, B, cfg_scale=cfg_scale, device=device)
+        o_imgs, gen_imgs = generate_from_dataset_lowest_scale(model, dataset, B, device=device)
     
     print("Saving generated images to deterministic_sampling.png ...")
     # Save mosaic of original and generated images
