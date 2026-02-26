@@ -120,7 +120,7 @@ def pick_device():
         return torch.device("cpu")
 
 def _check_scales(scales: Tuple[int, ...], p: int):
-    assert len(scales) >= 2, "Need at least two scales."
+    # assert len(scales) >= 2, "Need at least two scales."
     assert all(scales[i] < scales[i + 1] for i in range(len(scales) - 1)), "scales must be increasing."
     assert all(s % p == 0 for s in scales), "each scale must be divisible by patch_size."
 
@@ -252,13 +252,13 @@ def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_siz
     block1_pred_flat = block_1_pred.reshape(block_1_pred.shape[0], -1)
     block1_target_flat = block_1_target.reshape(block_1_target.shape[0], -1)
     sink_loss = sinkhorn_loss(block1_pred_flat, block1_target_flat)
-    mse_loss = F.mse_loss(later_blocks_pred, later_blocks_target)
+    mse_loss = torch.nan_to_num(F.mse_loss(later_blocks_pred, later_blocks_target), nan=0.0)
     return mse_loss + lbda*sink_loss
 
 def loss_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int]):
     block_s2sK_pred = preds[:, block_sizes[0]:, :]
     blocks_s2sK_target = targets[:, block_sizes[0]: , :]
-    return F.mse_loss(block_s2sK_pred, blocks_s2sK_target)
+    return torch.nan_to_num(F.mse_loss(block_s2sK_pred, blocks_s2sK_target), nan=0.0)
 
 
 
@@ -618,3 +618,130 @@ class XPredNextScale(nn.Module):
         if self.cfg.decoder_type == "var":
             self.decoder.enable_kv_cache(False)
         return img_k
+    
+
+    @torch.no_grad()
+    def generate_all_scales(
+        self,
+        B: int,
+        low_sc: torch.Tensor,  # [B, 3, s1, s1], clean lowest-scale image
+        labels: Optional[torch.Tensor] = None,
+    ) -> List[torch.Tensor]:
+        """
+        Returns all scales of the generated image, as a list [imgs_s1, ..., imgs_sK] where each imgs_sk is of shape [B, 3, sK, sK].
+        Uses KV caching; no blockwise mask needed at inference.
+        """
+
+        all_scales = []
+
+        device = next(self.parameters()).device
+        if labels is None:
+            labels = torch.randint(0, self.cfg.num_classes, (B,), device=device)
+        uncond = torch.full((B,), self.cfg.num_classes, device=device, dtype=torch.long)
+
+        # build pos/scale once
+        pos = self.pos_1L.to(device=device)
+        scale_ids = []
+        for k, n in enumerate(self.block_sizes):
+            scale_ids.extend([k] * n)
+        scale_ids = torch.tensor(scale_ids, device=device)
+        scale = self.scale_embed(scale_ids).unsqueeze(0)
+
+        def add_pos(x, offset):
+            # If you still want scale embedding, keep "+ scale[...]"
+            return x + pos[:, offset:offset + x.shape[1]] + scale[:, offset:offset + x.shape[1]]
+            # If you want ONLY positional embedding, drop the "+ scale[...]"
+
+        # first step: predict scale 1
+        offset = 0
+        n1_block = self.block_sizes[0]
+
+        if self.cfg.decoder_type == "var":
+            # Keep prefix context via KV cache across scale blocks
+            self.decoder.enable_kv_cache(True)
+
+        # class conditioning only for first block
+        start_cond = self._encode_condition(labels, B, device).unsqueeze(1)
+        start_uncond = self._encode_condition(uncond, B, device).unsqueeze(1)
+
+
+        # noisy lowest-scale image token (shared between cond/uncond)
+        s1 = self.scales[0]
+        #low = torch.zeros(B, 3, s1, s1, device=device)
+        low = low_sc.to(device=device)
+        low = self._build_first_scale(low)
+        low_patches = patchify(low, self.p)
+        low_block = self.patch_embed(low_patches)
+
+        block_cond = torch.cat([start_cond, low_block], dim=1)
+        block_uncond = torch.cat([start_uncond, low_block], dim=1)
+
+        inp_cond = add_pos(block_cond, offset)
+        inp_uncond = add_pos(block_uncond, offset)
+
+        if self.cfg.decoder_type == "gpt2":
+            past = None
+            inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+            out = self.decoder(inputs_embeds=inp_b, use_cache=True, past_key_values=past)
+            h = out.last_hidden_state
+            h_cond, h_uncond = h[:B], h[B:]
+            past = out.past_key_values
+        else:
+            cond_vec = self._encode_condition(labels, B, device)
+            uncond_vec = self._encode_condition(uncond, B, device)
+            # batch-double: single forward for cond/uncond to keep KV cache aligned
+            inp = torch.cat([inp_cond, inp_uncond], dim=0)
+            cond = torch.cat([cond_vec, uncond_vec], dim=0)
+            h = self.decoder(inp, cond, attn_bias=None)
+            h = self.decoder.apply_head_norm(h, cond)
+            h_cond, h_uncond = h[:B], h[B:]
+
+        pred = (1 + self.cfg.cfg_scale) * self.head(h_cond) - self.cfg.cfg_scale * self.head(h_uncond)
+        pred = pred[:, 1:, :]
+
+        # reconstruct scale-1 image
+        img_k = unpatchify(pred, self.p, s1, s1)
+        if self.apply_conv:
+            img_k = self.post_unpatch_convs[0](img_k)
+        all_scales.append(img_k)
+
+        # subsequent scales
+        offset += n1_block
+        for k in range(1, self.num_scales):
+            sk = self.scales[k]
+            up = F.interpolate(img_k, size=(sk, sk), mode="bicubic", align_corners=False)
+            patches = patchify(up, self.p)
+            inp = self.patch_embed(patches)
+
+            inp = add_pos(inp, offset)
+
+            if self.cfg.decoder_type == "gpt2":
+                # adding class embedding at each scale to match CFG design
+                inp_cond = inp + self.class_embed(labels).unsqueeze(1)
+                inp_uncond = inp + self.class_embed(uncond).unsqueeze(1)
+                inp_b = torch.cat([inp_cond, inp_uncond], dim=0)
+                out = self.decoder(inputs_embeds=inp_b, use_cache=True, past_key_values=past)
+                h = out.last_hidden_state
+                h_cond, h_uncond = h[:B], h[B:]
+                past = out.past_key_values
+            else:
+                cond_vec = self._encode_condition(labels, B, device)
+                uncond_vec = self._encode_condition(uncond, B, device)
+                # batch-double: single forward for cond/uncond to keep KV cache aligned
+                inp_b = torch.cat([inp, inp], dim=0)
+                cond_b = torch.cat([cond_vec, uncond_vec], dim=0)
+                h = self.decoder(inp_b, cond_b, attn_bias=None)
+                h = self.decoder.apply_head_norm(h, cond_b)
+                h_cond, h_uncond = h[:B], h[B:]
+            pred = (1 + self.cfg.cfg_scale) * self.head(h_cond) - self.cfg.cfg_scale * self.head(h_uncond)
+
+            img_k = unpatchify(pred, self.p, sk, sk)
+            if self.apply_conv:
+                img_k = self.post_unpatch_convs[k](img_k)
+            all_scales.append(img_k)
+
+            offset += self.block_sizes[k]
+
+        if self.cfg.decoder_type == "var":
+            self.decoder.enable_kv_cache(False)
+        return all_scales

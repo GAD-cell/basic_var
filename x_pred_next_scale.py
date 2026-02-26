@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - optional dependency
     wandb = None
 from eval.fid import fid_from_features, precision_recall_knn_blockwise
 from eval.features import get_dinov2_model, extract_dinov2_features
+from eval.mosaics import _nearest_neighbors_mosaic_all_sc
 from models.xpred_var_decoder import XPredNextScale, XPredConfig
 
 
@@ -162,56 +163,6 @@ def save_model(
         ckpt_path,
     )
 
-
-@torch.no_grad()
-def _save_mosaic(gen_imgs: torch.Tensor, nn_imgs: torch.Tensor, out_path: Path):
-    """
-    Save a 2-row mosaic: generated images on top, nearest neighbors below.
-    """
-    assert gen_imgs.shape == nn_imgs.shape
-    b = gen_imgs.shape[0]
-    stack = torch.cat([gen_imgs, nn_imgs], dim=0)
-    grid = make_grid(stack, nrow=b, padding=2)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    save_image(grid, out_path)
-
-
-@torch.no_grad()
-def _nearest_neighbors_mosaic(
-    model: XPredNextScale,
-    train_ds : datasets.ImageFolder,
-    real_features_path: str,
-    out_path: Path,
-    device: torch.device,
-    n_samples: int = 3,
-):
-    model.eval()
-
-    # retrieve a batch of real lowest-scale images to condition on
-    idx = torch.randint(0, len(train_ds), (n_samples,))
-    img = torch.stack([train_ds[i][0] for i in idx], dim=0).to(device)
-    labels = torch.tensor([train_ds[i][1] for i in idx], device=device, dtype=torch.long)
-    low_sc = F.interpolate(img, size=(model.scales[0], model.scales[0]), mode="area")
-
-    gen = model.generate(B=n_samples, low_sc=low_sc, labels=labels).clamp(0, 1)
-    dinov2 = get_dinov2_model(device)
-    gen_feats = extract_dinov2_features(dinov2, gen)
-
-    real_feats = torch.load(real_features_path, map_location="cpu")
-    if real_feats.dim() != 2:
-        raise ValueError(f"expected real features [N, D], got {tuple(real_feats.shape)}")
-    real_feats = real_feats.to(device)
-
-    dist = torch.cdist(gen_feats, real_feats)
-    nn_idx = dist.argmin(dim=1).tolist()
-    nn_imgs = []
-    for idx in nn_idx:
-        img, _ = train_ds[idx]
-        nn_imgs.append(img)
-    nn_imgs = torch.stack(nn_imgs, dim=0).to(device)
-
-    _save_mosaic(gen, nn_imgs, out_path)
-
 def _train_loop(
     model: XPredNextScale,
     train_cfg: TrainConfig,
@@ -329,7 +280,7 @@ def _train_loop(
             if train_cfg.use_wandb and run is not None:
                 wandb.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
             mosaic_path = Path("mosaics") / f"mosaic_step_{step}.png"
-            _nearest_neighbors_mosaic(
+            _nearest_neighbors_mosaic_all_sc(
                 model=model,
                 train_ds=train_ds,
                 real_features_path=real_features_path,
@@ -431,17 +382,17 @@ if __name__ == "__main__":
     train_cfg = TrainConfig(
         epochs=1000, 
         batch_size=64, 
-        eval_every_n_epochs=5, 
+        eval_every_n_epochs=1, 
         n_eval_samples=5000, 
         real_features_path="data/cifar10_train_dinov2_features.pt", 
         real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
         device=device.type, 
         use_wandb=True,
-        wandb_run_name="cifar10-var-L4-H4-d128-e1000",
+        wandb_run_name="cifar10-var-L6-H8-d256-e1000-sink-onescale",
         ckpt_every_n_steps=40_000,
     )
     cfg = XPredConfig(
-        scales=(8, 16, 32),
+        scales=(32,),
         patch_size=4,
         d_model=256,
         n_layer=6,
@@ -456,7 +407,7 @@ if __name__ == "__main__":
         cfg_scale=0.0,
         first_scale_noise_std=0.0,
         fs_full_noise=True,
-        loss="mse" # "mse" or "sink" or "mse_wo_s1"
+        loss="sink" # "mse" or "sink" or "mse_wo_s1"
     )
 
     model = XPredNextScale(cfg)
