@@ -288,7 +288,7 @@ def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_siz
         s1 = int((block1_length * p * p) ** 0.5)
         pred_img = unpatchify(block_1_pred, p, s1, s1).clamp(0, 1)
         target_img = unpatchify(block_1_target, p, s1, s1)
-        with torch.amp.autocast(enabled=False, device_type=dino_model.device.type):
+        with torch.amp.autocast(enabled=False, device_type=preds.device):
             pred_feats = extract_dinov2_features_with_grad(
                 dino_model,
                 pred_img,
@@ -415,7 +415,7 @@ class XPredNextScale(nn.Module):
         if self.cfg.loss == "mse":
             return F.mse_loss(preds, targets)
         elif self.cfg.loss == "sink":
-            return loss_sinkorn_s1_mse_s2sK(preds, targets, self.patch_block_sizes, self.cfg.sink_lbda, use_dino_features=True, dino_model=self.dino_model)
+            return loss_sinkorn_s1_mse_s2sK(preds, targets, self.patch_block_sizes, self.cfg.sink_lbda, use_dino_features=False, dino_model=self.dino_model)
         elif self.cfg.loss == "sinkdiv":
             return loss_sinkdiv_s1_mse_s2sK(preds, targets, self.patch_block_sizes, self.cfg.sink_lbda)
         elif self.cfg.loss == "mse_wo_s1":
