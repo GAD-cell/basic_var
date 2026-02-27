@@ -242,7 +242,7 @@ def sinkhorn_loss(
 
     return loss
 
-def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int], lbda:float = 1.0, use_dino_features:bool = True):
+def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int], lbda:float = 1.0, use_dino_features:bool = True, dino_model:Optional[torch.nn.Module] = None):
     """
     Applies sinkorn loss for first scale block, and MSE for later ones
     """
@@ -254,8 +254,6 @@ def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_siz
     later_blocks_target = targets[:, block_sizes[0]: , :]
 
     if use_dino_features:
-        device = preds.device
-        dino_model = get_dinov2_model(device)
         p = 4
         s1 = 32
         pred_img = unpatchify(block_1_pred, p, s1, s1)
@@ -357,6 +355,8 @@ class XPredNextScale(nn.Module):
             )
             self.post_unpatch_convs.append(convs)
 
+        self.dino_model = get_dinov2_model(pick_device())
+
     def _encode_condition(self, labels: Optional[torch.Tensor], B: int, device: torch.device) -> torch.Tensor:
         if labels is None:
             labels = torch.full((B,), self.cfg.num_classes, device=device, dtype=torch.long)
@@ -366,7 +366,7 @@ class XPredNextScale(nn.Module):
         if self.cfg.loss == "mse":
             return F.mse_loss(preds, targets)
         elif self.cfg.loss == "sink":
-            return loss_sinkorn_s1_mse_s2sK(preds, targets, self.patch_block_sizes, self.cfg.sink_lbda)
+            return loss_sinkorn_s1_mse_s2sK(preds, targets, self.patch_block_sizes, self.cfg.sink_lbda, use_dino_features=True, dino_model=self.dino_model)
         elif self.cfg.loss == "mse_wo_s1":
             return loss_mse_s2sK(preds, targets, self.patch_block_sizes)
         else:
