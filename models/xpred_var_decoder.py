@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from models.basic_var import AdaLNBeforeHead, AdaLNSelfAttn
 from models.conv import ResidualConv
+from eval.features import get_dinov2_model, extract_dinov2_features, extract_dinov2_features_with_grad
 
 
 class XPredVARDecoder(nn.Module):
@@ -241,19 +242,37 @@ def sinkhorn_loss(
 
     return loss
 
-def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int], lbda:float = 1.0):
+def loss_sinkorn_s1_mse_s2sK(preds:torch.Tensor, targets:torch.Tensor, block_sizes:List[int], lbda:float = 1.0, use_dino_features:bool = True):
     """
     Applies sinkorn loss for first scale block, and MSE for later ones
     """
+
     # Prediction and target are (B, L, patch_dim)
     block_1_pred = preds[:, :block_sizes[0], :]
     later_blocks_pred = preds[:, block_sizes[0]:, :]
     block_1_target = targets[:, :block_sizes[0], :]
     later_blocks_target = targets[:, block_sizes[0]: , :]
 
-    block1_pred_flat = block_1_pred.reshape(block_1_pred.shape[0], -1)
-    block1_target_flat = block_1_target.reshape(block_1_target.shape[0], -1)
-    sink_loss = sinkhorn_loss(block1_pred_flat, block1_target_flat)
+    if use_dino_features:
+        device = preds.device
+        dino_model = get_dinov2_model(device)
+        p = 4
+        s1 = 32
+        pred_img = unpatchify(block_1_pred, p, s1, s1)
+        target_img = unpatchify(block_1_target, p, s1, s1)
+        pred_feats = extract_dinov2_features_with_grad(
+            dino_model,
+            pred_img,
+            freeze_model=True,
+        )
+        with torch.no_grad():
+            target_feats = extract_dinov2_features(dino_model, target_img)
+        sink_loss = sinkhorn_loss(pred_feats, target_feats)
+    else:
+        block1_pred_flat = block_1_pred.reshape(block_1_pred.shape[0], -1)
+        block1_target_flat = block_1_target.reshape(block_1_target.shape[0], -1)
+        sink_loss = sinkhorn_loss(block1_pred_flat, block1_target_flat)
+
     mse_loss = torch.nan_to_num(F.mse_loss(later_blocks_pred, later_blocks_target), nan=0.0)
     return mse_loss + lbda*sink_loss
 

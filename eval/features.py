@@ -17,17 +17,41 @@ def get_dinov2_model(device: torch.device):
     return model
 
 
-def extract_dinov2_features(model, imgs_bchw: torch.Tensor) -> torch.Tensor:
-    tfm = transforms.Compose(
+def _dinov2_tfm():
+    return transforms.Compose(
         [
             transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.CenterCrop(224),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ]
     )
+
+
+def extract_dinov2_features(model, imgs_bchw: torch.Tensor) -> torch.Tensor:
+    tfm = _dinov2_tfm()
     imgs = tfm(imgs_bchw)
     with torch.no_grad():
         feats = model(imgs).detach()
+    return feats
+
+
+def extract_dinov2_features_with_grad(
+    model,
+    imgs_bchw: torch.Tensor,
+    freeze_model: bool = True,
+) -> torch.Tensor:
+    """
+    Grad-enabled DINOv2 features for generated images.
+    Use freeze_model=True to avoid updating DINO weights while keeping gradients
+    flowing to imgs_bchw.
+    """
+    if freeze_model:
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad_(False)
+    tfm = _dinov2_tfm()
+    imgs = tfm(imgs_bchw)
+    feats = model(imgs)
     return feats
 
 # Create new .pt file for storing image features
