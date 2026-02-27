@@ -392,7 +392,7 @@ if __name__ == "__main__":
         ckpt_every_n_steps=40_000,
     )
     cfg = XPredConfig(
-        scales=(32,),
+        scales=(8, 16, 32),
         patch_size=4,
         d_model=256,
         n_layer=6,
@@ -407,7 +407,7 @@ if __name__ == "__main__":
         cfg_scale=0.0,
         first_scale_noise_std=0.0,
         fs_full_noise=True,
-        loss="sink" # "mse" or "sink" or "mse_wo_s1"
+        loss="sink" # "mse" or "sink" or "sink_div" or "mse_wo_s1"
     )
 
     model = XPredNextScale(cfg)
