@@ -382,7 +382,7 @@ if __name__ == "__main__":
     train_cfg = TrainConfig(
         epochs=1000, 
         batch_size=64, 
-        eval_every_n_epochs=1, 
+        eval_every_n_epochs=5, 
         n_eval_samples=5000, 
         real_features_path="data/cifar10_train_dinov2_features.pt", 
         real_subset=50000, knn_k=3, use_amp=_use_amp(device), 
