@@ -175,7 +175,7 @@ def build_blockwise_mask(block_sizes: List[int], device: torch.device) -> torch.
 def sinkhorn_loss(
     y,
     x,
-    epsilon=0.1,
+    epsilon=1.0,
     n_iters=50
 ):
     """
@@ -216,23 +216,25 @@ def sinkhorn_loss(
         C = C.clamp_min(0.0)  # guard against tiny negative values from roundoff
     else :
         C = torch.cdist(y, x, p=2) ** 2  # (n, m)
+    C = C / y.shape[1]
 
     # Log-domain Sinkhorn variables
     log_a = torch.log(a)
     log_b = torch.log(b)
 
-    u = torch.zeros_like(log_a)
-    v = torch.zeros_like(log_b)
+    with torch.no_grad():
+        u = torch.zeros_like(log_a)
+        v = torch.zeros_like(log_b)
 
-    logK = -C / epsilon
+        logK = -C / epsilon
 
-    # Sinkhorn iterations
-    for _ in range(n_iters):
-        u = log_a - torch.logsumexp(logK + v[None,:], dim=1)
-        v = log_b - torch.logsumexp(logK + u[:,None], dim=0)
+        # Sinkhorn iterations
+        for _ in range(n_iters):
+            u = log_a - torch.logsumexp(logK + v[None,:], dim=1)
+            v = log_b - torch.logsumexp(logK + u[:,None], dim=0)
 
-    # Transport plan π
-    pi = torch.exp(logK + u[:, None] + v[None, :])  # (n, m)
+        # Transport plan π
+        pi = torch.exp(logK + u[:, None] + v[None, :])  # (n, m)
 
     # Sinkhorn cost
     loss = torch.sum(pi * C)
