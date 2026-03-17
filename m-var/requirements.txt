@@ -6,6 +6,6 @@ numpy
 pytz
 transformers
 typed-argument-parser
+xformers
 torchvision
-pot
-matplotlib
+wandb
